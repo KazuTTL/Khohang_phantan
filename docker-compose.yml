@@ -1,0 +1,97 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver_wms
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=Password123!
+    ports:
+      - "1433:1433"
+    volumes:
+      - ./sql/init_databases.sql:/init_databases.sql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Password123! -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq_wms
+    ports:
+      - "5672:5672"     # AMQP Broker
+      - "15672:15672"   # Management Dashboard
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hq_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.hq
+    container_name: hq_service
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_ROLE=HQ
+      - PORT=8000
+      - DATABASE_URL=sqlite:///./db_hq.db # Fallback mặc định hoặc chuỗi mssql+pyodbc
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  branch_hn:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.branch
+    container_name: branch_hn
+    ports:
+      - "8001:8001"
+    environment:
+      - BRANCH_CODE=HN
+      - BRANCH_NAME=Chi nhánh Hà Nội
+      - PORT=8001
+      - DATABASE_URL=sqlite:///./db_branch_hn.db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  branch_hcm:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.branch
+    container_name: branch_hcm
+    ports:
+      - "8002:8002"
+    environment:
+      - BRANCH_CODE=HCM
+      - BRANCH_NAME=Chi nhánh TP.HCM
+      - PORT=8002
+      - DATABASE_URL=sqlite:///./db_branch_hcm.db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend_wms
+    ports:
+      - "3000:3000"
+    depends_on:
+      - hq_service
+      - branch_hn
+      - branch_hcm
+    restart: on-failure

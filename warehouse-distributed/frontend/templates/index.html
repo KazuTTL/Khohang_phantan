@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed WMS - Fault Tolerance & Section 8.3 Reliable RPC</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome 6 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        dark: {
+                            900: '#0b0f19',
+                            800: '#111827',
+                            700: '#1f2937',
+                            600: '#374151'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-panel {
+            background: rgba(17, 24, 39, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .pulse-online {
+            animation: pulse-green 2s infinite;
+        }
+        @keyframes pulse-green {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.15); }
+        }
+    </style>
+</head>
+<body class="bg-dark-900 text-gray-100 font-sans min-h-screen flex flex-col antialiased selection:bg-blue-600 selection:text-white">
+
+    <!-- TOP HEADER -->
+    <header class="border-b border-gray-800 bg-dark-800/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+            <div class="flex items-center space-x-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                    <i class="fa-solid fa-network-wired text-2xl text-white"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        HỆ THỐNG QUẢN LÝ KHO PHÂN TÁN
+                        <span class="text-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-mono">Chương 8 Chịu Lỗi</span>
+                    </h1>
+                    <p class="text-xs text-gray-400">Giao tiếp tin cậy Client-Server (Mục 8.3) & Cam kết 2 Pha 2PC (Mục 8.5)</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <!-- Cluster Health Badge -->
+                <div id="clusterHealthBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-gray-800 border border-gray-700">
+                    <span class="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping"></span>
+                    <span id="clusterHealthText">Đang kiểm tra cụm...</span>
+                </div>
+
+                <!-- Global Action Controls -->
+                <button onclick="startAllServices()" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm hover:shadow-emerald-500/20">
+                    <i class="fa-solid fa-play"></i> Bật Cụm (Start All)
+                </button>
+                <button onclick="stopAllServices()" class="px-3.5 py-1.5 bg-rose-600/80 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-stop"></i> Tắt Cụm (Stop All)
+                </button>
+                <button onclick="seedDatabase()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition" title="Khởi tạo lại bảng và dữ liệu mẫu">
+                    <i class="fa-solid fa-database"></i> Nạp lại DB
+                </button>
+                <button onclick="refreshAll()" class="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition" title="Làm mới ngay">
+                    <i class="fa-solid fa-arrows-rotate"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- NAVIGATION TABS -->
+    <div class="border-b border-gray-800 bg-dark-800 px-6">
+        <div class="max-w-7xl mx-auto flex space-x-2 overflow-x-auto py-2">
+            <button onclick="switchTab('nodes')" id="tab-btn-nodes" class="tab-btn active px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 bg-blue-600 text-white shadow-sm">
+                <i class="fa-solid fa-server"></i> Cụm Node & Topology
+            </button>
+            <button onclick="switchTab('order')" id="tab-btn-order" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 text-gray-400 hover:text-white hover:bg-gray-800">
+                <i class="fa-solid fa-bolt text-amber-400"></i> Đặt Hàng & Demo Mục 8.3
+            </button>
+            <button onclick="switchTab('inventory')" id="tab-btn-inventory" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 text-gray-400 hover:text-white hover:bg-gray-800">
+                <i class="fa-solid fa-boxes-stacked text-purple-400"></i> Tồn Kho & Tài Khoản
+            </button>
+            <button onclick="switchTab('chaos')" id="tab-btn-chaos" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 text-gray-400 hover:text-white hover:bg-gray-800">
+                <i class="fa-solid fa-skull-crossbones text-rose-400"></i> Chaos & Kiểm Thử Chịu Lỗi
+            </button>
+            <button onclick="switchTab('logs')" id="tab-btn-logs" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 text-gray-400 hover:text-white hover:bg-gray-800">
+                <i class="fa-solid fa-receipt text-cyan-400"></i> Nhật Ký 2PC & Idempotency
+            </button>
+            <button onclick="switchTab('theory')" id="tab-btn-theory" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 text-gray-400 hover:text-white hover:bg-gray-800">
+                <i class="fa-solid fa-book-bookmark text-emerald-400"></i> Lý Thuyết Mục 8.3
+            </button>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT CONTAINER -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+
+        <!-- ================================================================= -->
+        <!-- TAB 1: CỤM NODE & TOPOLOGY -->
+        <!-- ================================================================= -->
+        <section id="tab-nodes" class="tab-content space-y-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-sitemap text-blue-400"></i> Trạng Thái Các Node Trong Cụm Phân Tán
+                    </h2>
+                    <p class="text-sm text-gray-400">Giám sát heartbeat, process PID, và điều khiển trực tiếp từng tiến trình (Crash Injection / Restart)</p>
+                </div>
+                <span class="text-xs font-mono text-gray-400 bg-gray-800 px-3 py-1 rounded-md border border-gray-700">Tự động cập nhật mỗi 3s</span>
+            </div>
+
+            <!-- NODE CARDS GRID -->
+            <div id="nodesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                <!-- Dynamic Node Cards Rendered by JS -->
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- TAB 2: ĐẶT HÀNG & DEMO MỤC 8.3 (RELIABLE RPC & IDEMPOTENCY) -->
+        <!-- ================================================================= -->
+        <section id="tab-order" class="tab-content hidden space-y-6">
+            <div class="p-4 rounded-xl bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-purple-900/40 border border-blue-700/30">
+                <div class="flex items-start gap-3">
+                    <div class="p-2.5 rounded-lg bg-blue-500/20 text-blue-400">
+                        <i class="fa-solid fa-circle-info text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white">Kiểm Chứng Ngữ Nghĩa RPC Tin Cậy (Mục 8.3.2)</h3>
+                        <p class="text-xs text-gray-300 mt-1 leading-relaxed">
+                            Mục 8.3 giải quyết 2 bài toán lớn: <b>Lost Requests</b> (mất request -> Client tự động retry với timeout) và <b>Lost Replies / Duplicate Requests</b> (mất phản hồi -> Client gửi lại). Hệ thống sử dụng <b>Idempotency Key (Request ID)</b> để đạt ngữ nghĩa <b>At-Most-Once</b>: máy chủ chỉ thực thi trừ tiền và xuất kho <i>duy nhất 1 lần</i>, các lần gửi trùng lặp sẽ trả về kết quả đã cache.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <!-- FORM CONTROLS (Col 5) -->
+                <div class="lg:col-span-5 glass-panel rounded-2xl p-6 space-y-5 border border-gray-800 shadow-xl">
+                    <h3 class="text-base font-bold text-white flex items-center gap-2 border-b border-gray-800 pb-3">
+                        <i class="fa-solid fa-cart-shopping text-blue-400"></i> Khởi Tạo Giao Dịch Đặt Hàng
+                    </h3>
+
+                    <!-- Request ID / Idempotency Key -->
+                    <div class="space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs font-semibold text-gray-300">Client Request ID (Idempotency Key):</label>
+                            <button onclick="generateNewRequestId()" class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                                <i class="fa-solid fa-rotate"></i> Tạo mã mới
+                            </button>
+                        </div>
+                        <input id="inputRequestId" type="text" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 font-mono text-sm text-amber-300 focus:outline-none focus:border-blue-500 transition" value="">
+                        <p class="text-[11px] text-gray-400">Khóa duy nhất gắn liền với yêu cầu RPC. Giữ nguyên mã này khi muốn test gửi trùng lặp.</p>
+                    </div>
+
+                    <!-- Product Picker -->
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-semibold text-gray-300">Chọn sản phẩm:</label>
+                        <select id="inputProductId" onchange="updateProductPrice()" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
+                            <option value="SP001" data-price="250000">SP001 - Áo polo nam Cotton (250,000 VNĐ)</option>
+                            <option value="SP002" data-price="450000">SP002 - Quần jeans nam Slimfit (450,000 VNĐ)</option>
+                            <option value="SP003" data-price="850000">SP003 - Giày Sneaker Running (850,000 VNĐ)</option>
+                            <option value="SP004" data-price="550000">SP004 - Balo Laptop chống nước (550,000 VNĐ)</option>
+                            <option value="SP005" data-price="120000">SP005 - Mũ lưỡi trai phong cách (120,000 VNĐ)</option>
+                            <option value="P001" data-price="200000">P001 - Áo thun cơ bản (200,000 VNĐ)</option>
+                        </select>
+                    </div>
+
+                    <!-- Quantity & Preferred Warehouse -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-semibold text-gray-300">Số lượng:</label>
+                            <input id="inputQuantity" type="number" min="1" max="100" value="1" oninput="updateProductPrice()" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-semibold text-gray-300">Ưu tiên Kho:</label>
+                            <select id="inputPreferredWh" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
+                                <option value="">Tự động chọn (Best)</option>
+                                <option value="HN">Kho Hà Nội (HN)</option>
+                                <option value="DN">Kho Đà Nẵng (DN)</option>
+                                <option value="SG">Kho TP.HCM (SG)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Customer Account & Amount -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-semibold text-gray-300">Tài khoản thanh toán:</label>
+                            <select id="inputAccount" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500">
+                                <option value="alice">Alice (Số dư 1000$ ~ 25,000k)</option>
+                                <option value="bob">Bob (Số dư 500$ ~ 12,500k)</option>
+                                <option value="poor_user">Khách hết tiền (Test Abort)</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-semibold text-gray-300">Tổng tiền (VNĐ):</label>
+                            <input id="inputAmount" type="number" value="250000" class="w-full bg-dark-800 border border-gray-700 rounded-lg px-3.5 py-2 text-sm font-mono text-emerald-400 focus:outline-none focus:border-blue-500">
+                        </div>
+                    </div>
+
+                    <!-- ACTION BUTTONS: 3 SECTION 8.3 MODES -->
+                    <div class="space-y-2 pt-2 border-t border-gray-800">
+                        <label class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Hành Động Kiểm Thử:</label>
+                        
+                        <!-- Mode 1: Normal Order -->
+                        <button onclick="submitOrder('normal')" class="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20">
+                            <i class="fa-solid fa-paper-plane"></i> 1. Gửi Đơn Hàng Thông Thường (Normal RPC)
+                        </button>
+
+                        <!-- Mode 2: Duplicate Request (At-Most-Once Test) -->
+                        <button onclick="submitOrder('duplicate')" class="w-full py-2.5 px-4 bg-amber-600/90 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20">
+                            <i class="fa-solid fa-clone"></i> 2. Mô Phỏng Gửi Trùng Lặp (Kiểm tra At-Most-Once)
+                        </button>
+
+                        <!-- Mode 3: Timeout & Retry (Lost Request/Reply Test) -->
+                        <button onclick="submitOrder('timeout_retry')" class="w-full py-2.5 px-4 bg-purple-600/90 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-arrow-rotate-right"></i> 3. Mô Phỏng Mất Gói Tin & Tự Động Retry (Mục 8.3.2)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 2PC VISUALIZER & RESULTS (Col 7) -->
+                <div class="lg:col-span-7 space-y-5">
+                    <!-- Live Execution Status Card -->
+                    <div class="glass-panel rounded-2xl p-6 border border-gray-800 space-y-4">
+                        <div class="flex items-center justify-between border-b border-gray-800 pb-3">
+                            <h3 class="text-base font-bold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-diagram-project text-indigo-400"></i> Tiến Trình Cam Kết 2 Pha (2-Phase Commit Flow)
+                            </h3>
+                            <span id="orderResultBadge" class="text-xs px-2.5 py-1 rounded-full bg-gray-800 text-gray-400 font-mono">Chờ lệnh...</span>
+                        </div>
+
+                        <!-- Step By Step 2PC Pipeline Visualization -->
+                        <div class="space-y-4">
+                            <!-- Step 1: Client RPC -->
+                            <div class="flex items-center gap-3">
+                                <div id="step-icon-1" class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-xs text-gray-400 font-bold">1</div>
+                                <div class="flex-1 p-3 rounded-xl bg-dark-800/80 border border-gray-800">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-semibold text-gray-300">Client RPC & Idempotency Key Validation</span>
+                                        <span id="step-status-1" class="text-[11px] text-gray-500 font-mono">Sẵn sàng</span>
+                                    </div>
+                                    <p id="step-desc-1" class="text-[11px] text-gray-400 mt-0.5">Kiểm tra Request ID trong cache để xác định đơn mới hay đơn trùng lặp.</p>
+                                </div>
+                            </div>
+
+                            <!-- Step 2: Phase 1 Prepare -->
+                            <div class="flex items-center gap-3">
+                                <div id="step-icon-2" class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-xs text-gray-400 font-bold">2</div>
+                                <div class="flex-1 p-3 rounded-xl bg-dark-800/80 border border-gray-800 space-y-2">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-semibold text-gray-300">Phase 1: PREPARE (Bình Chọn Giao Dịch)</span>
+                                        <span id="step-status-2" class="text-[11px] text-gray-500 font-mono">Chờ...</span>
+                                    </div>
+                                    <!-- Participant Votes Badges -->
+                                    <div class="flex gap-2">
+                                        <span id="voteWhBadge" class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">Kho: -</span>
+                                        <span id="votePayBadge" class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">Thanh toán: -</span>
+                                        <span id="voteShipBadge" class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">Vận chuyển: -</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Step 3: Phase 2 Global Decision -->
+                            <div class="flex items-center gap-3">
+                                <div id="step-icon-3" class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-xs text-gray-400 font-bold">3</div>
+                                <div class="flex-1 p-3 rounded-xl bg-dark-800/80 border border-gray-800">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-semibold text-gray-300">Phase 2: GLOBAL COMMIT hoặc ABORT</span>
+                                        <span id="step-status-3" class="text-[11px] text-gray-500 font-mono">Chờ...</span>
+                                    </div>
+                                    <p id="step-desc-3" class="text-[11px] text-gray-400 mt-0.5">Tất cả đồng ý -> COMMIT (trừ kho, trừ tiền, tạo vận đơn). Bất kỳ lỗi nào -> ABORT (rollback).</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Result Notification Box -->
+                        <div id="orderResultAlert" class="hidden p-4 rounded-xl border">
+                            <div class="flex items-start gap-3">
+                                <i id="orderResultAlertIcon" class="text-lg mt-0.5"></i>
+                                <div class="flex-1">
+                                    <h4 id="orderResultAlertTitle" class="text-sm font-bold"></h4>
+                                    <p id="orderResultAlertMsg" class="text-xs mt-1 leading-relaxed"></p>
+                                    <div id="orderResultExtra" class="mt-2 text-xs font-mono bg-dark-900/60 p-2.5 rounded-lg border border-gray-800 space-y-1"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- JSON Raw Inspector -->
+                    <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                                <i class="fa-solid fa-code text-cyan-400"></i> Phản Hồi JSON Trực Tiếp Từ Coordinator
+                            </span>
+                            <span id="orderLatencyText" class="text-[11px] font-mono text-gray-400">Latency: 0ms</span>
+                        </div>
+                        <pre id="orderJsonViewer" class="bg-dark-900 p-3 rounded-xl font-mono text-xs text-gray-300 overflow-x-auto max-h-48 border border-gray-800">// Kết quả giao dịch sẽ xuất hiện tại đây...</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- TAB 3: TỒN KHO & TÀI KHOẢN PHÂN TÁN -->
+        <!-- ================================================================= -->
+        <section id="tab-inventory" class="tab-content hidden space-y-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-boxes-stacked text-purple-400"></i> Ma Trận Tồn Kho Toàn Bộ Chi Nhánh
+                    </h2>
+                    <p class="text-sm text-gray-400">Đối soát số lượng tồn thực tế (Quantity) và số lượng đang khóa chuẩn bị xuất (Reserved) giữa HN, DN, SG</p>
+                </div>
+                <button onclick="refreshInventory()" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs rounded-lg flex items-center gap-1.5">
+                    <i class="fa-solid fa-arrows-rotate"></i> Làm mới tồn kho
+                </button>
+            </div>
+
+            <!-- 3 WAREHOUSES TABLE GRID -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-5" id="warehouseStockTables">
+                <!-- HN, DN, SG tables rendered here -->
+            </div>
+
+            <!-- ACCOUNTS & SHIPMENTS ROW -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-4">
+                <!-- Customer Balances (Col 5) -->
+                <div class="lg:col-span-5 glass-panel rounded-2xl p-5 border border-gray-800 space-y-3">
+                    <h3 class="text-sm font-bold text-white flex items-center gap-2 border-b border-gray-800 pb-2">
+                        <i class="fa-solid fa-wallet text-emerald-400"></i> Số Dư Tài Khoản (Payment Service)
+                    </h3>
+                    <div id="accountsList" class="space-y-2">
+                        <!-- Accounts rendered here -->
+                    </div>
+                </div>
+
+                <!-- Shipments List (Col 7) -->
+                <div class="lg:col-span-7 glass-panel rounded-2xl p-5 border border-gray-800 space-y-3">
+                    <h3 class="text-sm font-bold text-white flex items-center gap-2 border-b border-gray-800 pb-2">
+                        <i class="fa-solid fa-truck-fast text-sky-400"></i> Vận Đơn Xuất Kho (Shipping Service)
+                    </h3>
+                    <div id="shipmentsList" class="overflow-x-auto max-h-56">
+                        <!-- Shipments rendered here -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- TAB 4: CHAOS & KIỂM THỬ CHỊU LỖI -->
+        <!-- ================================================================= -->
+        <section id="tab-chaos" class="tab-content hidden space-y-6">
+            <div>
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-skull-crossbones text-rose-400"></i> Chaos Engineering & Kịch Bản Kiểm Thử Chịu Lỗi
+                </h2>
+                <p class="text-sm text-gray-400">Kích hoạt trực tiếp các trường hợp lỗi kinh điển trong Hệ Phân Tán (Chương 8) để quan sát cơ chế tự phục hồi</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+                <!-- Scenario 1: Crash Kho HN -->
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-3 flex flex-col justify-between">
+                    <div class="space-y-2">
+                        <div class="w-10 h-10 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center font-bold">
+                            <i class="fa-solid fa-fire"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-white">Kịch Bản 1: Đánh Sập Kho HN</h3>
+                        <p class="text-xs text-gray-400 leading-relaxed">
+                            Mô phỏng node Kho HN bị crash đột ngột. Khi đặt hàng, Coordinator sẽ tự động phát hiện và chuyển hướng sang Kho DN hoặc SG còn hàng.
+                        </p>
+                    </div>
+                    <div class="space-y-1.5 pt-2">
+                        <button onclick="triggerCrash('HN')" class="w-full py-2 bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-semibold rounded-lg transition">
+                            <i class="fa-solid fa-power-off"></i> Đánh sập Kho HN
+                        </button>
+                        <button onclick="triggerRestart('HN')" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition">
+                            <i class="fa-solid fa-rotate-left"></i> Phục hồi Kho HN
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Scenario 2: Hết Hàng (Abort 2PC) -->
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-3 flex flex-col justify-between">
+                    <div class="space-y-2">
+                        <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-white">Kịch Bản 2: Hết Hàng Trong Kho</h3>
+                        <p class="text-xs text-gray-400 leading-relaxed">
+                            Đặt số lượng vượt quá tổng tồn kho (ví dụ đặt 999 cái). Kho sẽ Vote ABORT ở Pha 1, ép Coordinator gửi GLOBAL ABORT, không trừ tiền khách.
+                        </p>
+                    </div>
+                    <button onclick="runScenarioOutOfStock()" class="w-full py-2 bg-amber-600/80 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg transition mt-auto">
+                        <i class="fa-solid fa-play"></i> Thử đặt 999 sản phẩm
+                    </button>
+                </div>
+
+                <!-- Scenario 3: Tài Khoản Hết Tiền (Payment Abort) -->
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-3 flex flex-col justify-between">
+                    <div class="space-y-2">
+                        <div class="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
+                            <i class="fa-solid fa-credit-card"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-white">Kịch Bản 3: Không Đủ Số Dư</h3>
+                        <p class="text-xs text-gray-400 leading-relaxed">
+                            Tài khoản khách hàng không đủ tiền. Dịch vụ Payment sẽ Vote ABORT ở Pha 1, yêu cầu hủy giữ hàng và không phát hành đơn vận chuyển.
+                        </p>
+                    </div>
+                    <button onclick="runScenarioInsufficientBalance()" class="w-full py-2 bg-purple-600/80 hover:bg-purple-600 text-white text-xs font-semibold rounded-lg transition mt-auto">
+                        <i class="fa-solid fa-play"></i> Thử tài khoản không đủ tiền
+                    </button>
+                </div>
+
+                <!-- Scenario 4: Crash Coordinator -->
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-3 flex flex-col justify-between">
+                    <div class="space-y-2">
+                        <div class="w-10 h-10 rounded-xl bg-red-500/20 text-red-400 flex items-center justify-center font-bold">
+                            <i class="fa-solid fa-brain"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-white">Kịch Bản 4: Sập Coordinator</h3>
+                        <p class="text-xs text-gray-400 leading-relaxed">
+                            Mô phỏng lỗi Arbiter trung tâm. Client gửi đơn sẽ nhận timeout, áp dụng Mục 8.3.2 Retry. Khi bật lại Coordinator, nó nạp lại log và tiếp tục hoạt động.
+                        </p>
+                    </div>
+                    <div class="space-y-1.5 pt-2">
+                        <button onclick="triggerCrash('coordinator')" class="w-full py-2 bg-rose-700 hover:bg-rose-600 text-white text-xs font-semibold rounded-lg transition">
+                            <i class="fa-solid fa-skull"></i> Đánh sập Coordinator
+                        </button>
+                        <button onclick="triggerRestart('coordinator')" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition">
+                            <i class="fa-solid fa-rotate-left"></i> Phục hồi Coordinator
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- TAB 5: NHẬT KÝ 2PC & IDEMPOTENCY STORE -->
+        <!-- ================================================================= -->
+        <section id="tab-logs" class="tab-content hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <!-- 2PC Transactions Log (Col 7) -->
+                <div class="lg:col-span-7 glass-panel rounded-2xl p-5 border border-gray-800 space-y-3">
+                    <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+                        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-clock-rotate-left text-cyan-400"></i> Nhật Ký Cam Kết 2 Pha (WAL Logs)
+                        </h3>
+                        <button onclick="refreshLogs()" class="text-xs text-cyan-400 hover:underline">Làm mới</button>
+                    </div>
+                    <div id="txnsLogTable" class="overflow-x-auto max-h-[500px]">
+                        <!-- Logs rendered here -->
+                    </div>
+                </div>
+
+                <!-- Idempotency Store (Col 5) -->
+                <div class="lg:col-span-5 glass-panel rounded-2xl p-5 border border-gray-800 space-y-3">
+                    <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+                        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-fingerprint text-amber-400"></i> Idempotency Cache (Mục 8.3)
+                        </h3>
+                        <button onclick="clearIdempotencyCache()" class="text-xs text-rose-400 hover:underline flex items-center gap-1">
+                            <i class="fa-solid fa-trash-can"></i> Xóa Cache
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-400">Bảng lưu trữ các Request ID đã xử lý. Bất kỳ request nào trùng khớp sẽ trả về kết quả từ bảng này.</p>
+                    <div id="idempotencyList" class="space-y-2.5 overflow-y-auto max-h-[460px]">
+                        <!-- Cached entries rendered here -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- TAB 6: LÝ THUYẾT MỤC 8.3 & GIÁO TRÌNH HỆ PHÂN TÁN -->
+        <!-- ================================================================= -->
+        <section id="tab-theory" class="tab-content hidden space-y-6">
+            <div class="glass-panel rounded-2xl p-6 border border-gray-800 space-y-6 max-w-5xl mx-auto">
+                <div>
+                    <h2 class="text-xl font-bold text-white flex items-center gap-2.5">
+                        <i class="fa-solid fa-book-open text-emerald-400"></i> Giáo Trình Hệ Phân Tán - Mục 8.3: Giao Tiếp Tin Cậy Client-Server
+                    </h2>
+                    <p class="text-xs text-gray-400 mt-1">Trích dẫn & Áp dụng từ sách <i>Distributed Systems (4th Edition) - Andrew S. Tanenbaum & Maarten van Steen</i></p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs text-gray-300 leading-relaxed">
+                    <!-- Section 8.3.1 -->
+                    <div class="bg-dark-800/80 p-4 rounded-xl border border-gray-800 space-y-2">
+                        <h4 class="font-bold text-emerald-400 text-sm flex items-center gap-1.5">
+                            <i class="fa-solid fa-arrows-left-right"></i> 8.3.1 Point-to-Point Communication
+                        </h4>
+                        <p>Che giấu lỗi đường truyền (omission failures) bằng các giao thức tin cậy hướng kết nối như TCP hoặc cơ chế ACK / Timer ở tầng ứng dụng.</p>
+                        <p>Nếu đường truyền bị đứt hoặc trễ quá mức quy định, hệ thống thông báo cho phía phát để khởi tạo kết nối lại hoặc chuyển tiếp.</p>
+                    </div>
+
+                    <!-- Section 8.3.2 Lost Requests -->
+                    <div class="bg-dark-800/80 p-4 rounded-xl border border-gray-800 space-y-2">
+                        <h4 class="font-bold text-amber-400 text-sm flex items-center gap-1.5">
+                            <i class="fa-solid fa-triangle-exclamation"></i> 8.3.2.1 Lost Request Messages
+                        </h4>
+                        <p>Nếu yêu cầu gửi đi bị mất trên đường truyền trước khi đến được server, giải pháp đơn giản nhất là <b>Client sử dụng Timer</b> để đếm thời gian phản hồi.</p>
+                        <p>Nếu quá thời gian quy định (Timeout), Client sẽ <b>tự động thử lại (Retransmit / Retry)</b> với khoảng chờ tăng dần (Exponential Backoff).</p>
+                    </div>
+
+                    <!-- Section 8.3.2 Server Crashes & Semantics -->
+                    <div class="bg-dark-800/80 p-4 rounded-xl border border-gray-800 space-y-2">
+                        <h4 class="font-bold text-blue-400 text-sm flex items-center gap-1.5">
+                            <i class="fa-solid fa-server"></i> 8.3.2.2 Server Crashes & RPC Semantics
+                        </h4>
+                        <p>Khi Server bị sập trong lúc xử lý, có các mức ngữ nghĩa:</p>
+                        <ul class="list-disc pl-4 space-y-1">
+                            <li><b>At-least-once:</b> Client gửi lại đến khi thành công. Phù hợp cho thao tác idempotent (đọc dữ liệu).</li>
+                            <li><b>At-most-once:</b> Đảm bảo mỗi yêu cầu chỉ được thực thi tối đa 1 lần. Bắt buộc cho nghiệp vụ tài chính, xuất kho.</li>
+                            <li><b>Exactly-once:</b> Lý tưởng nhất nhưng bất khả thi nếu không có consensus và persistent write-ahead logging (WAL).</li>
+                        </ul>
+                    </div>
+
+                    <!-- Section 8.3.2 Lost Replies -->
+                    <div class="bg-dark-800/80 p-4 rounded-xl border border-gray-800 space-y-2">
+                        <h4 class="font-bold text-purple-400 text-sm flex items-center gap-1.5">
+                            <i class="fa-solid fa-envelope-open-text"></i> 8.3.2.3 Lost Reply Messages (Mất Phản Hồi)
+                        </h4>
+                        <p>Yêu cầu đã được Server thực thi xong, nhưng gói tin phản hồi (Reply) bị rớt trên đường về. Client tưởng lỗi nên gửi lại.</p>
+                        <p><b>Giải pháp:</b> Server phải gán hoặc nhận <b>Sequence Number / Idempotency Key (Request ID)</b>, lưu kết quả vào cache. Khi nhận trùng mã, Server trả ngay kết quả cũ mà không thực thi lại side-effects.</p>
+                    </div>
+                </div>
+
+                <!-- 2PC Architecture Diagram -->
+                <div class="bg-dark-900/80 p-5 rounded-xl border border-gray-800 space-y-3 font-mono text-xs text-gray-300">
+                    <div class="text-sm font-bold text-indigo-400 flex items-center gap-2">
+                        <i class="fa-solid fa-network-wired"></i> Kiến Trúc Mô Hình Trong Dự Án Này:
+                    </div>
+                    <pre class="overflow-x-auto text-emerald-400">
+[Reliable Client] ---- (RPC with Request ID) ----> [2PC Coordinator :7000]
+                                                            |
+                     +--------------------------------------+--------------------------------------+
+                     |                                      |                                      |
+                     v                                      v                                      v
+          [Kho HN / DN / SG]                             [Payment :5004]                       [Shipping :5005]
+             (Ports 5001-5003)                           - Deduct balance                      - Create tracking
+        - Check & reserve stock                          - Check limits                        - Issue airway bill
+        - Write-ahead log (WAL)                          - Idempotent txns                     - Status: SHIPPED
+                    </pre>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="border-t border-gray-800 bg-dark-800/80 py-4 px-6 text-center text-xs text-gray-500">
+        Đồ án Hệ Thống Phân Tán (Distributed Systems) • Xây dựng theo chuẩn Chương 8 Chịu Lỗi & Mục 8.3 Reliable RPC • Cổng Dashboard 8080
+    </footer>
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toastContainer" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        // State
+        let currentTab = 'nodes';
+        let nodesData = [];
+
+        // Tab Switching
+        function switchTab(tabId) {
+            currentTab = tabId;
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.remove('bg-blue-600', 'text-white', 'shadow-sm');
+                b.classList.add('text-gray-400', 'hover:text-white', 'hover:bg-gray-800');
+            });
+            const activeBtn = document.getElementById(`tab-btn-${tabId}`);
+            if (activeBtn) {
+                activeBtn.classList.remove('text-gray-400', 'hover:text-white', 'hover:bg-gray-800');
+                activeBtn.classList.add('bg-blue-600', 'text-white', 'shadow-sm');
+            }
+
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+            const targetSection = document.getElementById(`tab-${tabId}`);
+            if (targetSection) targetSection.classList.remove('hidden');
+
+            if (tabId === 'inventory') refreshInventory();
+            if (tabId === 'logs') refreshLogs();
+        }
+
+        // Toast Messages
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            const bgClass = type === 'success' ? 'bg-emerald-600' : (type === 'error' ? 'bg-rose-600' : 'bg-gray-800 border border-gray-700');
+            const icon = type === 'success' ? 'fa-circle-check' : (type === 'error' ? 'fa-circle-xmark' : 'fa-bell');
+            
+            toast.className = `flex items-center gap-3 px-4 py-3 rounded-xl shadow-xl text-white text-xs font-semibold ${bgClass} transition-all transform translate-y-2 opacity-0 duration-300`;
+            toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        // Request ID generator
+        function generateNewRequestId() {
+            const hex = Math.random().toString(16).substring(2, 10).toUpperCase();
+            document.getElementById('inputRequestId').value = `REQ-${hex}`;
+        }
+
+        function updateProductPrice() {
+            const select = document.getElementById('inputProductId');
+            const opt = select.options[select.selectedIndex];
+            const price = parseFloat(opt.getAttribute('data-price') || 0);
+            const qty = parseInt(document.getElementById('inputQuantity').value || 1);
+            document.getElementById('inputAmount').value = price * qty;
+        }
+
+        // =====================================================================
+        // CLUSTER STATUS POLLING & RENDERING
+        // =====================================================================
+
+        async function fetchClusterStatus() {
+            try {
+                const res = await fetch('/api/cluster/status');
+                const data = await res.json();
+                nodesData = data.nodes || [];
+
+                // Update Header Badge
+                const badge = document.getElementById('clusterHealthBadge');
+                const text = document.getElementById('clusterHealthText');
+                if (data.cluster_healthy) {
+                    badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 text-emerald-400 border border-emerald-800/60';
+                    text.innerText = 'Tất cả 6 Node Hoạt Động (Healthy)';
+                } else {
+                    badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-rose-950/60 text-rose-400 border border-rose-800/60';
+                    text.innerText = 'Cụm Có Node Sập (Degraded)';
+                }
+
+                // Render Node Cards
+                renderNodesGrid(nodesData);
+            } catch (err) {
+                console.error("Cluster poll error:", err);
+            }
+        }
+
+        function renderNodesGrid(nodes) {
+            const grid = document.getElementById('nodesGrid');
+            grid.innerHTML = nodes.map(n => {
+                const isOnline = n.status === 'ONLINE';
+                const statusBg = isOnline ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+                const dotBg = isOnline ? 'bg-emerald-400 pulse-online' : 'bg-rose-500';
+                
+                return `
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 flex flex-col justify-between space-y-4 hover:border-gray-700 transition">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <span class="text-[10px] font-mono uppercase tracking-wider text-gray-400">${n.role}</span>
+                            <h3 class="text-base font-bold text-white mt-0.5">${n.name}</h3>
+                            <div class="flex items-center gap-2 mt-1 text-xs font-mono text-gray-400">
+                                <span>Port: <b class="text-blue-400">${n.port}</b></span>
+                                <span>•</span>
+                                <span>PID: <b class="${isOnline ? 'text-emerald-400' : 'text-gray-500'}">${n.pid || 'N/A'}</b></span>
+                            </div>
+                        </div>
+                        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${statusBg}">
+                            <span class="w-2 h-2 rounded-full ${dotBg}"></span>
+                            ${n.status}
+                        </span>
+                    </div>
+
+                    <!-- Direct Node Controls -->
+                    <div class="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800">
+                        <button onclick="triggerCrash('${n.id}')" ${!isOnline ? 'disabled class="py-1.5 px-3 rounded-lg text-xs font-semibold bg-gray-800 text-gray-500 cursor-not-allowed"' : 'class="py-1.5 px-3 rounded-lg text-xs font-semibold bg-rose-600/80 hover:bg-rose-600 text-white transition"'}>
+                            <i class="fa-solid fa-power-off"></i> Crash
+                        </button>
+                        <button onclick="triggerRestart('${n.id}')" class="py-1.5 px-3 rounded-lg text-xs font-semibold bg-emerald-600/80 hover:bg-emerald-600 text-white transition">
+                            <i class="fa-solid fa-arrows-rotate"></i> Restart
+                        </button>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        // =====================================================================
+        // ORDER & 2PC LOGIC (SECTION 8.3 DEMO)
+        // =====================================================================
+
+        async function submitOrder(mode = 'normal') {
+            const reqId = document.getElementById('inputRequestId').value.trim() || `REQ-${Math.random().toString(16).substring(2, 10).toUpperCase()}`;
+            const productId = document.getElementById('inputProductId').value;
+            const quantity = parseInt(document.getElementById('inputQuantity').value || 1);
+            const account = document.getElementById('inputAccount').value;
+            const amount = parseFloat(document.getElementById('inputAmount').value || 250000);
+            const preferredWh = document.getElementById('inputPreferredWh').value;
+
+            // Reset visual pipeline
+            setPipelineStep(1, 'active', 'Đang gửi RPC...');
+            setPipelineStep(2, 'waiting', 'Chờ...');
+            setPipelineStep(3, 'waiting', 'Chờ...');
+            document.getElementById('orderResultBadge').innerText = 'Đang xử lý...';
+            document.getElementById('orderResultBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-blue-900/60 text-blue-300 font-mono animate-pulse';
+            document.getElementById('orderResultAlert').classList.add('hidden');
+
+            try {
+                const res = await fetch('/api/order/submit', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        request_id: reqId,
+                        product_id: productId,
+                        quantity: quantity,
+                        account: account,
+                        amount: amount,
+                        preferred_warehouse: preferredWh,
+                        mode: mode
+                    })
+                });
+
+                const data = await res.json();
+                document.getElementById('orderLatencyText').innerText = `Latency: ${data.latency_ms || 0}ms`;
+                document.getElementById('orderJsonViewer').innerText = JSON.stringify(data, null, 2);
+
+                if (res.ok && data.status === 'SUCCESS') {
+                    // Step 1 Success
+                    setPipelineStep(1, 'done', data.is_duplicate ? 'Phát hiện Trùng Lặp (Idempotent Hit)' : 'Request ID hợp lệ');
+                    // Step 2 Prepare Votes
+                    setPipelineStep(2, 'done', 'Tất cả đồng thuận (All Votes YES)');
+                    updateVoteBadges(data.votes);
+                    // Step 3 Commit
+                    setPipelineStep(3, 'done', 'GLOBAL COMMIT Thành Công');
+
+                    document.getElementById('orderResultBadge').innerText = data.is_duplicate ? 'IDEMPOTENT HIT' : 'COMMITTED';
+                    document.getElementById('orderResultBadge').className = data.is_duplicate ? 
+                        'text-xs px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-mono' : 
+                        'text-xs px-2.5 py-1 rounded-full bg-emerald-900/60 text-emerald-300 font-mono';
+
+                    // Alert Box
+                    const alertBox = document.getElementById('orderResultAlert');
+                    alertBox.classList.remove('hidden');
+                    if (data.is_duplicate) {
+                        alertBox.className = 'p-4 rounded-xl border bg-amber-950/40 border-amber-800 text-amber-200';
+                        document.getElementById('orderResultAlertIcon').className = 'fa-solid fa-clone text-amber-400';
+                        document.getElementById('orderResultAlertTitle').innerText = 'MỤC 8.3: NHẬN DIỆN YÊU CẦU TRÙNG LẶP (AT-MOST-ONCE SEMANTICS)';
+                        document.getElementById('orderResultAlertMsg').innerText = 'Máy chủ phát hiện Request ID này đã từng được thực thi thành công trước đó. Hệ thống trả về kết quả đã cache mà KHÔNG trừ tiền hay trừ hàng lần thứ 2!';
+                    } else {
+                        alertBox.className = 'p-4 rounded-xl border bg-emerald-950/40 border-emerald-800 text-emerald-200';
+                        document.getElementById('orderResultAlertIcon').className = 'fa-solid fa-circle-check text-emerald-400';
+                        document.getElementById('orderResultAlertTitle').innerText = 'GIAO DỊCH 2PC THÀNH CÔNG RỰC RỠ!';
+                        document.getElementById('orderResultAlertMsg').innerText = `Đã xuất kho ${data.warehouse}, trừ tài khoản ${data.account}, và cấp mã vận đơn thành công.`;
+                    }
+
+                    document.getElementById('orderResultExtra').innerHTML = `
+                        <div><b>Txn ID:</b> ${data.txn_id}</div>
+                        <div><b>Kho xuất:</b> ${data.warehouse} | <b>Mã vận đơn:</b> ${data.tracking || 'N/A'}</div>
+                        <div><b>Thời gian:</b> ${data.time_str}</div>
+                    `;
+
+                    showToast(data.is_duplicate ? 'Mục 8.3: Phát hiện trùng lặp, bảo toàn số dư!' : 'Đơn hàng thành công qua 2PC!', 'success');
+                } else {
+                    // Aborted or Error
+                    setPipelineStep(1, 'done', 'Xử lý hoàn tất');
+                    setPipelineStep(2, 'failed', 'Có vote từ chối (REJECT)');
+                    updateVoteBadges(data.votes || {});
+                    setPipelineStep(3, 'failed', 'GLOBAL ABORT (Rollback)');
+
+                    document.getElementById('orderResultBadge').innerText = 'ABORTED';
+                    document.getElementById('orderResultBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-rose-900/60 text-rose-300 font-mono';
+
+                    const alertBox = document.getElementById('orderResultAlert');
+                    alertBox.classList.remove('hidden');
+                    alertBox.className = 'p-4 rounded-xl border bg-rose-950/40 border-rose-800 text-rose-200';
+                    document.getElementById('orderResultAlertIcon').className = 'fa-solid fa-circle-exclamation text-rose-400';
+                    document.getElementById('orderResultAlertTitle').innerText = 'GIAO DỊCH BỊ HỦY BỎ (GLOBAL ABORT)';
+                    document.getElementById('orderResultAlertMsg').innerText = data.message || `Lý do: ${data.reason}`;
+                    document.getElementById('orderResultExtra').innerHTML = `
+                        <div><b>Mã yêu cầu:</b> ${data.request_id}</div>
+                        <div><b>Txn ID:</b> ${data.txn_id || 'N/A'}</div>
+                    `;
+                    showToast(`Giao dịch thất bại: ${data.reason}`, 'error');
+                }
+
+                // Auto refresh stock & accounts
+                refreshInventory();
+            } catch (err) {
+                console.error("Order submit error:", err);
+                showToast(`Lỗi mạng: ${err.message}`, 'error');
+            }
+        }
+
+        function setPipelineStep(step, state, desc) {
+            const icon = document.getElementById(`step-icon-${step}`);
+            const status = document.getElementById(`step-status-${step}`);
+            if (state === 'active') {
+                icon.className = 'w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold animate-pulse';
+                status.innerText = desc;
+                status.className = 'text-[11px] text-blue-400 font-mono';
+            } else if (state === 'done') {
+                icon.className = 'w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-bold';
+                icon.innerHTML = '<i class="fa-solid fa-check"></i>';
+                status.innerText = desc;
+                status.className = 'text-[11px] text-emerald-400 font-mono';
+            } else if (state === 'failed') {
+                icon.className = 'w-8 h-8 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs font-bold';
+                icon.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+                status.innerText = desc;
+                status.className = 'text-[11px] text-rose-400 font-mono';
+            } else {
+                icon.className = 'w-8 h-8 rounded-full bg-gray-800 border border-gray-700 text-gray-500 flex items-center justify-center text-xs font-bold';
+                icon.innerText = step;
+                status.innerText = desc;
+                status.className = 'text-[11px] text-gray-500 font-mono';
+            }
+        }
+
+        function updateVoteBadges(votes) {
+            const wh = document.getElementById('voteWhBadge');
+            const pay = document.getElementById('votePayBadge');
+            const ship = document.getElementById('voteShipBadge');
+
+            if (votes.warehouse !== undefined) {
+                wh.className = votes.warehouse ? 'text-[11px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-800' : 'text-[11px] px-2 py-0.5 rounded bg-rose-900/60 text-rose-300 border border-rose-800';
+                wh.innerText = `Kho: ${votes.warehouse ? 'COMMIT' : 'ABORT'}`;
+            }
+            if (votes.payment !== undefined) {
+                pay.className = votes.payment ? 'text-[11px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-800' : 'text-[11px] px-2 py-0.5 rounded bg-rose-900/60 text-rose-300 border border-rose-800';
+                pay.innerText = `Thanh toán: ${votes.payment ? 'COMMIT' : 'ABORT'}`;
+            }
+            if (votes.shipping !== undefined) {
+                ship.className = votes.shipping ? 'text-[11px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-800' : 'text-[11px] px-2 py-0.5 rounded bg-rose-900/60 text-rose-300 border border-rose-800';
+                ship.innerText = `Vận chuyển: ${votes.shipping ? 'COMMIT' : 'ABORT'}`;
+            }
+        }
+
+        // =====================================================================
+        // INVENTORY, ACCOUNTS & SHIPMENTS
+        // =====================================================================
+
+        async function refreshInventory() {
+            try {
+                const [invRes, accRes, shipRes] = await Promise.all([
+                    fetch('/api/cluster/inventory'),
+                    fetch('/api/cluster/accounts'),
+                    fetch('/api/cluster/shipments')
+                ]);
+                const inv = await invRes.json();
+                const accs = await accRes.json();
+                const ships = await shipRes.json();
+
+                renderInventoryTables(inv);
+                renderAccounts(accs);
+                renderShipments(ships);
+            } catch (err) {
+                console.error("Refresh inventory err:", err);
+            }
+        }
+
+        function renderInventoryTables(inv) {
+            const container = document.getElementById('warehouseStockTables');
+            const whMap = {
+                "HN": {name: "Kho Tổng Hà Nội", icon: "fa-landmark"},
+                "DN": {name: "Kho Miền Trung (Đà Nẵng)", icon: "fa-city"},
+                "SG": {name: "Kho Tổng TP.HCM", icon: "fa-building"}
+            };
+
+            container.innerHTML = ["HN", "DN", "SG"].map(code => {
+                const items = inv[code] || [];
+                const info = whMap[code];
+                return `
+                <div class="glass-panel rounded-2xl p-5 border border-gray-800 space-y-3">
+                    <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+                        <h4 class="text-sm font-bold text-white flex items-center gap-2">
+                            <i class="fa-solid ${info.icon} text-purple-400"></i> ${info.name}
+                        </h4>
+                        <span class="text-xs font-mono text-purple-400 bg-purple-900/30 px-2 py-0.5 rounded border border-purple-800/40">${code}</span>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead>
+                                <tr class="text-gray-400 border-b border-gray-800/80">
+                                    <th class="py-2">Mã</th>
+                                    <th class="py-2">Tên</th>
+                                    <th class="py-2 text-right">Khả Dụng</th>
+                                    <th class="py-2 text-right">Khóa (Res)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-800/50">
+                                ${items.length ? items.map(p => `
+                                    <tr class="hover:bg-gray-800/30">
+                                        <td class="py-2 font-mono text-blue-400 font-semibold">${p.id}</td>
+                                        <td class="py-2 text-gray-200">${p.name}</td>
+                                        <td class="py-2 text-right font-mono font-bold ${p.available > 0 ? 'text-emerald-400' : 'text-rose-400'}">${p.available}</td>
+                                        <td class="py-2 text-right font-mono text-amber-400">${p.reserved}</td>
+                                    </tr>
+                                `).join('') : `<tr><td colspan="4" class="py-4 text-center text-gray-500">Node OFFLINE hoặc chưa có dữ liệu</td></tr>`}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        function renderAccounts(accs) {
+            const list = document.getElementById('accountsList');
+            if (!accs.length) {
+                list.innerHTML = '<p class="text-xs text-gray-500">Dịch vụ Payment OFFLINE</p>';
+                return;
+            }
+            list.innerHTML = accs.map(a => `
+                <div class="flex items-center justify-between p-3 rounded-xl bg-dark-800/80 border border-gray-800">
+                    <div class="flex items-center gap-2.5">
+                        <div class="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
+                            <i class="fa-solid fa-user"></i>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-white capitalize">${a.account}</span>
+                            <p class="text-[10px] text-gray-400">Khách hàng hệ thống</p>
+                        </div>
+                    </div>
+                    <span class="text-xs font-mono font-bold text-emerald-400">${a.balance.toLocaleString()} VNĐ</span>
+                </div>
+            `).join('');
+        }
+
+        function renderShipments(ships) {
+            const list = document.getElementById('shipmentsList');
+            if (!ships.length) {
+                list.innerHTML = '<p class="text-xs text-gray-500 py-3 text-center">Chưa có vận đơn nào được tạo</p>';
+                return;
+            }
+            list.innerHTML = `
+                <table class="w-full text-left text-xs">
+                    <thead>
+                        <tr class="text-gray-400 border-b border-gray-800">
+                            <th class="py-1.5">Mã Vận Đơn</th>
+                            <th class="py-1.5">Mặt Hàng</th>
+                            <th class="py-1.5">SL</th>
+                            <th class="py-1.5 text-right">Trạng Thái</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-800/50">
+                        ${ships.map(s => `
+                            <tr>
+                                <td class="py-2 font-mono text-sky-400 font-bold">${s.tracking || s.txn_id.substring(0, 8)}</td>
+                                <td class="py-2 text-gray-200">${s.product_id}</td>
+                                <td class="py-2 text-gray-200">${s.quantity}</td>
+                                <td class="py-2 text-right">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${s.status === 'SHIPPED' ? 'bg-emerald-900/40 text-emerald-400 border border-emerald-800' : 'bg-amber-900/40 text-amber-400'}">${s.status}</span>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        // =====================================================================
+        // LOGS & IDEMPOTENCY CACHE
+        // =====================================================================
+
+        async function refreshLogs() {
+            try {
+                const [txnsRes, idemRes] = await Promise.all([
+                    fetch('/api/cluster/transactions'),
+                    fetch('/api/cluster/idempotency')
+                ]);
+                const txns = await txnsRes.json();
+                const idem = await idemRes.json();
+
+                renderTxnsLog(txns);
+                renderIdempotencyList(idem);
+            } catch (err) {
+                console.error("Refresh logs err:", err);
+            }
+        }
+
+        function renderTxnsLog(txns) {
+            const table = document.getElementById('txnsLogTable');
+            if (!txns.length) {
+                table.innerHTML = '<p class="text-xs text-gray-500 py-4 text-center">Chưa có giao dịch 2PC nào được ghi nhận</p>';
+                return;
+            }
+            table.innerHTML = `
+                <table class="w-full text-left text-xs">
+                    <thead>
+                        <tr class="text-gray-400 border-b border-gray-800">
+                            <th class="py-2">Thời Gian</th>
+                            <th class="py-2">Mã Txn / Request ID</th>
+                            <th class="py-2">Trạng Thái 2PC</th>
+                            <th class="py-2 text-right">Chi Tiết</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-800/50">
+                        ${txns.map(t => {
+                            const isCommit = t.state === 'GLOBAL_COMMIT';
+                            const isAbort = t.state === 'GLOBAL_ABORT';
+                            const color = isCommit ? 'text-emerald-400 bg-emerald-950/40 border-emerald-800' : (isAbort ? 'text-rose-400 bg-rose-950/40 border-rose-800' : 'text-blue-400 bg-blue-950/40 border-blue-800');
+                            return `
+                            <tr class="hover:bg-gray-800/30">
+                                <td class="py-2 font-mono text-gray-400 text-[11px]">${t.time_str || new Date(t.ts * 1000).toLocaleTimeString()}</td>
+                                <td class="py-2 font-mono">
+                                    <div class="text-gray-200 font-semibold">${t.request_id || 'N/A'}</div>
+                                    <div class="text-[10px] text-gray-500">${t.txn ? t.txn.substring(0, 14) + '...' : ''}</div>
+                                </td>
+                                <td class="py-2">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${color}">${t.state}</span>
+                                </td>
+                                <td class="py-2 text-right font-mono text-[11px] text-gray-400">${t.extra ? JSON.stringify(t.extra) : ''}</td>
+                            </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderIdempotencyList(store) {
+            const list = document.getElementById('idempotencyList');
+            const keys = Object.keys(store);
+            if (!keys.length) {
+                list.innerHTML = '<p class="text-xs text-gray-500 py-4 text-center">Cache đang trống. Khi đặt hàng, mã Request ID sẽ lưu tại đây.</p>';
+                return;
+            }
+            list.innerHTML = keys.map(k => {
+                const item = store[k];
+                const isSuccess = item.status === 'SUCCESS';
+                return `
+                <div class="p-3 rounded-xl bg-dark-800/80 border border-gray-800 space-y-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-mono font-bold text-amber-400">${k}</span>
+                        <span class="text-[10px] font-semibold px-2 py-0.5 rounded ${isSuccess ? 'bg-emerald-900/40 text-emerald-300' : 'bg-rose-900/40 text-rose-300'}">${item.status}</span>
+                    </div>
+                    <div class="text-[11px] text-gray-400">
+                        Sản phẩm: <b class="text-gray-200">${item.product_id}</b> x ${item.quantity} | Kho: <b class="text-gray-200">${item.warehouse || 'N/A'}</b>
+                    </div>
+                    <div class="text-[10px] text-gray-500 font-mono">Đã ghi nhận lúc: ${item.time_str || 'N/A'}</div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        async function clearIdempotencyCache() {
+            if (!confirm('Bạn có chắc muốn xóa sạch Idempotency Cache không?')) return;
+            try {
+                const res = await fetch('/api/cluster/idempotency/clear', {method: 'POST'});
+                if (res.ok) {
+                    showToast('Đã xóa sạch Idempotency Cache', 'success');
+                    refreshLogs();
+                }
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        // =====================================================================
+        // NODE CONTROLS & CHAOS SCENARIOS
+        // =====================================================================
+
+        async function triggerCrash(nodeId) {
+            try {
+                const res = await fetch('/api/node/kill', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({node_id: nodeId})
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    showToast(`Đã đánh sập node ${nodeId}!`, 'error');
+                } else {
+                    showToast(`Không thể sập node ${nodeId}`, 'error');
+                }
+                setTimeout(fetchClusterStatus, 500);
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        async function triggerRestart(nodeId) {
+            try {
+                const res = await fetch('/api/node/restart', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({node_id: nodeId})
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    showToast(`Đã khởi động lại node ${nodeId}!`, 'success');
+                } else {
+                    showToast(`Không thể bật node ${nodeId}`, 'error');
+                }
+                setTimeout(fetchClusterStatus, 1500);
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        async function startAllServices() {
+            showToast('Đang khởi động tất cả các service...', 'info');
+            try {
+                const res = await fetch('/api/cluster/start_all', {method: 'POST'});
+                if (res.ok) {
+                    showToast('Đã gửi lệnh bật toàn bộ cụm!', 'success');
+                    setTimeout(fetchClusterStatus, 2000);
+                }
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        async function stopAllServices() {
+            if (!confirm('Bạn có chắc muốn dừng tất cả 6 service trong cụm?')) return;
+            try {
+                const res = await fetch('/api/cluster/stop_all', {method: 'POST'});
+                if (res.ok) {
+                    showToast('Đã dừng toàn bộ các service!', 'info');
+                    setTimeout(fetchClusterStatus, 500);
+                }
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        async function seedDatabase() {
+            showToast('Đang nạp lại dữ liệu ban đầu cho database...', 'info');
+            try {
+                const res = await fetch('/api/seed_db', {method: 'POST'});
+                const data = await res.json();
+                if (data.ok) {
+                    showToast('Khởi tạo lại dữ liệu mẫu thành công!', 'success');
+                    refreshInventory();
+                }
+            } catch (err) {
+                showToast(`Lỗi: ${err.message}`, 'error');
+            }
+        }
+
+        function runScenarioOutOfStock() {
+            switchTab('order');
+            document.getElementById('inputQuantity').value = 999;
+            updateProductPrice();
+            generateNewRequestId();
+            showToast('Đã đặt số lượng 999 cái. Bấm "Gửi Đơn Hàng" để kiểm thử Abort!', 'info');
+        }
+
+        function runScenarioInsufficientBalance() {
+            switchTab('order');
+            document.getElementById('inputAccount').value = 'poor_user';
+            document.getElementById('inputQuantity').value = 5;
+            updateProductPrice();
+            generateNewRequestId();
+            showToast('Đã chọn tài khoản không đủ tiền. Bấm "Gửi Đơn Hàng" để kiểm thử Abort!', 'info');
+        }
+
+        function refreshAll() {
+            fetchClusterStatus();
+            refreshInventory();
+            refreshLogs();
+            showToast('Đã làm mới toàn bộ dữ liệu', 'info');
+        }
+
+        // =====================================================================
+        // INITIALIZATION
+        // =====================================================================
+        window.addEventListener('DOMContentLoaded', () => {
+            generateNewRequestId();
+            updateProductPrice();
+            fetchClusterStatus();
+            refreshInventory();
+
+            // Background polling every 3 seconds
+            setInterval(() => {
+                fetchClusterStatus();
+                if (currentTab === 'inventory') refreshInventory();
+                if (currentTab === 'logs') refreshLogs();
+            }, 3000);
+        });
+    </script>
+</body>
+</html>
