@@ -1,47 +1,92 @@
 # backend/branch_service/services/outbox_worker.py
-"""
-Outbox Worker: Đảm bảo giao tiếp phân tán tin cậy (Reliable Messaging)
-Quét định kỳ các thông điệp chưa gửi trong bảng Outbox_Events để phát lên RabbitMQ.
-Giải quyết bài toán: Mạng gián đoạn hoặc RabbitMQ restart đột ngột không làm mất thông điệp.
-"""
-import json
 import asyncio
+import json
 import logging
-from ..database import SessionLocal
-from ..models import OutboxEvent
-from shared.rabbitmq_client import get_broker
+from datetime import datetime, timezone
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger("OutboxWorker")
+from branch_service.config import branch_settings
+from branch_service.database import AsyncSessionLocal
+from branch_service.models import OutboxMessage
+from shared.config import shared_config
+from shared.rabbitmq_client import RabbitMQClient
 
-async def run_outbox_worker(interval_seconds: float = 2.0):
-    broker = get_broker()
-    logger.info("[OUTBOX WORKER] Đã khởi động tiến trình quét Outbox...")
+logger = logging.getLogger(f"BranchOutboxWorker_{branch_settings.BRANCH_CODE}")
 
-    while True:
-        try:
-            db = SessionLocal()
+
+class BranchOutboxWorker:
+    """
+    Background worker định kỳ quét bảng Outbox_Messages tại DB của Chi nhánh và publish lên RabbitMQ.
+    Đảm bảo tính tự trị: nếu mất kết nối tới broker, tin nhắn lưu an toàn trong CSDL cục bộ
+    và sẽ được gửi đi ngay khi kết nối phục hồi.
+    """
+
+    def __init__(self, rabbitmq_client: RabbitMQClient):
+        self.rmq = rabbitmq_client
+        self._running = False
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info(f"[OUTBOX WORKER] Đã khởi động quét Outbox tại chi nhánh {branch_settings.BRANCH_CODE}...")
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task:
+            self._task.cancel()
             try:
-                # Quét các sự kiện chưa phát (tối đa 20 bản ghi mỗi đợt)
-                pending_events = db.query(OutboxEvent).filter(OutboxEvent.is_published == False).order_by(OutboxEvent.created_at.asc()).limit(20).all()
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info(f"[OUTBOX WORKER] Đã dừng quét Outbox tại chi nhánh {branch_settings.BRANCH_CODE}.")
 
-                for evt in pending_events:
-                    try:
-                        payload_data = json.loads(evt.payload)
-                        success = await broker.publish(evt.routing_key, payload_data)
-                        if success:
-                            evt.is_published = True
-                            db.commit()
-                            logger.info(f"[OUTBOX] Đã phát thành công Event {evt.event_id} -> Key: {evt.routing_key}")
-                    except Exception as err:
-                        logger.error(f"[OUTBOX] Lỗi khi phát Event {evt.event_id}: {err}")
-                        break # Tạm dừng đợt này, thử lại đợt kế tiếp
-            finally:
-                db.close()
+    async def _run_loop(self) -> None:
+        while self._running:
+            try:
+                await self.process_pending_messages()
+            except Exception as e:
+                logger.error(f"[OUTBOX ERROR] Lỗi trong vòng lặp Outbox Chi nhánh {branch_settings.BRANCH_CODE}: {e}", exc_info=True)
+            await asyncio.sleep(shared_config.OUTBOX_POLL_INTERVAL_SECONDS)
 
-        except asyncio.CancelledError:
-            logger.info("[OUTBOX WORKER] Nhận tín hiệu dừng tiến trình.")
-            break
-        except Exception as e:
-            logger.error(f"[OUTBOX WORKER] Ngoại lệ vòng lặp: {e}")
+    async def process_pending_messages(self) -> None:
+        if not self.rmq.is_connected:
+            return
 
-        await asyncio.sleep(interval_seconds)
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                select(OutboxMessage)
+                .where(OutboxMessage.status == "PENDING")
+                .order_by(OutboxMessage.created_at.asc())
+                .limit(20)
+            )
+            res = await session.execute(stmt)
+            messages = res.scalars().all()
+
+            if not messages:
+                return
+
+            for msg in messages:
+                try:
+                    payload_dict = json.loads(msg.payload)
+                    published = await self.rmq.publish(
+                        routing_key=msg.routing_key,
+                        message=payload_dict,
+                        correlation_id=msg.message_id
+                    )
+                    if published:
+                        msg.status = "PROCESSED"
+                        msg.processed_at = datetime.now(timezone.utc)
+                    else:
+                        msg.retry_count += 1
+                        if msg.retry_count >= shared_config.MAX_OUTBOX_RETRIES:
+                            msg.status = "FAILED"
+                            logger.error(f"[OUTBOX FAILED] Msg {msg.message_id} vượt quá số lần retry.")
+                except Exception as ex:
+                    msg.retry_count += 1
+                    logger.error(f"[OUTBOX PUBLISH ERR] Msg {msg.message_id}: {ex}")
+                    if msg.retry_count >= shared_config.MAX_OUTBOX_RETRIES:
+                        msg.status = "FAILED"
+
+            await session.commit()

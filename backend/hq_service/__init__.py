@@ -1,1 +1,1 @@
-# backend/hq_service package
+# backend/hq_service/__init__.py

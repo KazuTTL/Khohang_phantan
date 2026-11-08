@@ -1,137 +1,89 @@
 # backend/hq_service/consumers/hq_event_consumer.py
-"""
-HQ Saga Orchestrator Consumer
-Lắng nghe các sự kiện từ các Branch Node để điều phối các bước tiếp theo trong chuỗi Saga
-và đồng bộ Global Inventory Snapshot.
-"""
 import logging
-from typing import Dict, Any
-from ..database import SessionLocal
-from ..models import TransferOrder, GlobalInventorySnapshot
-from shared.event_schemas import RabbitMQMessage, TransferMessageData
-from shared.rabbitmq_client import get_broker
+from datetime import datetime, timezone
+from typing import Any
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from hq_service.database import AsyncSessionLocal
+from hq_service.models import GlobalInventorySnapshot
+from hq_service.saga.handlers import SagaStepHandlers
+from shared.event_schemas import (
+    EvtInventoryUpdatedPayload, EvtReserveFailedPayload,
+    EvtStockReleasedPayload, EvtStockReservedPayload,
+    EvtTransferCompletedPayload, EvtTransferRejectedPayload
+)
+from shared.idempotency import check_and_mark_inbox
 
 logger = logging.getLogger("HQEventConsumer")
+CONSUMER_NAME = "HQEventConsumer"
 
-async def start_hq_consumer():
-    broker = get_broker()
-    queue_name = "hq_saga_events_queue"
-    routing_keys = [
-        "evt.transfer.reserved",
-        "evt.transfer.reserve_failed",
-        "evt.transfer.completed",
-        "evt.transfer.rejected",
-        "evt.transfer.released",
-        "evt.inventory.updated"
-    ]
 
-    async def handle_event(msg_dict: Dict[str, Any]):
-        event_type = msg_dict.get("event_type")
-        data = msg_dict.get("data", {})
-        logger.info(f"[HQ CONSUMER] Nhận sự kiện: {event_type} | Data: {data}")
+async def process_hq_event(message_data: dict[str, Any], routing_key: str) -> None:
+    """
+    Xử lý tất cả các Event gửi về HQ qua RabbitMQ (routing_key bắt đầu bằng 'evt.').
+    Bảo đảm tính Idempotent bằng Inbox Pattern.
+    """
+    msg_id = message_data.get("message_id") or ""
+    event_type = message_data.get("event_type") or ""
+    payload_dict = message_data.get("payload") or {}
 
-        db = SessionLocal()
-        try:
-            # 1. Đồng bộ tồn kho toàn cục
-            if event_type == "EVT_INVENTORY_UPDATED":
-                branch_code = data.get("branch_code")
-                sku = data.get("sku")
-                avail = data.get("available_qty", 0)
-                reserved = data.get("reserved_qty", 0)
-
-                snap = db.query(GlobalInventorySnapshot).filter(
-                    GlobalInventorySnapshot.branch_code == branch_code,
-                    GlobalInventorySnapshot.sku == sku
-                ).first()
-
-                if snap:
-                    snap.available_qty = avail
-                    snap.reserved_qty = reserved
-                else:
-                    snap = GlobalInventorySnapshot(
-                        branch_code=branch_code,
-                        sku=sku,
-                        available_qty=avail,
-                        reserved_qty=reserved
-                    )
-                    db.add(snap)
-                db.commit()
-                logger.info(f"[HQ INVENTORY] Cập nhật Snapshot: Chi nhánh {branch_code} | {sku} -> Avail={avail}, Reserved={reserved}")
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            # 1. Kiểm tra tính Idempotent qua Inbox
+            is_new = await check_and_mark_inbox(session, msg_id, CONSUMER_NAME)
+            if not is_new:
+                logger.info(f"[IDEMPOTENT SKIP] Message {msg_id} ({event_type}) đã được xử lý trước đó. Bỏ qua.")
                 return
 
-            # 2. Xử lý trạng thái Saga Điều chuyển
-            transfer_id = data.get("transfer_id")
-            if not transfer_id:
-                return
+            logger.info(f"[HQ CONSUME] Đang xử lý {event_type} (msg_id={msg_id}, rkey={routing_key})")
 
-            order = db.query(TransferOrder).filter(TransferOrder.transfer_id == transfer_id).first()
-            if not order:
-                logger.warning(f"[HQ SAGA] Không tìm thấy đơn {transfer_id} trong DB_HQ")
-                return
-
-            # A. Kho nguồn đã khóa hàng thành công
+            # 2. Xử lý các sự kiện Saga
             if event_type == "EVT_STOCK_RESERVED":
-                order.saga_status = "RESERVED_IN_TRANSIT"
-                db.commit()
-                logger.info(f"[HQ SAGA] Đơn {transfer_id}: Chuyển sang RESERVED_IN_TRANSIT. Gửi lệnh nhập kho tới {order.dest_branch}.")
+                payload = EvtStockReservedPayload(**payload_dict)
+                await SagaStepHandlers.handle_stock_reserved(session, payload)
 
-                # Phát lệnh CMD_IMPORT_TRANSFER tới kho đích
-                cmd_import = RabbitMQMessage(
-                    event_type="CMD_IMPORT_TRANSFER",
-                    data=TransferMessageData(
-                        transfer_id=order.transfer_id,
-                        source_branch=order.source_branch,
-                        dest_branch=order.dest_branch,
-                        sku=order.sku,
-                        quantity=order.quantity
-                    )
-                )
-                await broker.publish(f"cmd.transfer.import.{order.dest_branch}", cmd_import)
-
-            # B. Kho nguồn khóa hàng thất bại (Hết hàng hoặc lỗi)
             elif event_type == "EVT_RESERVE_FAILED":
-                order.saga_status = "FAILED"
-                order.error_reason = data.get("reason", "Kho nguồn không đủ tồn kho khả dụng")
-                db.commit()
-                logger.warning(f"[HQ SAGA] Đơn {transfer_id}: Khóa hàng thất bại. Đóng đơn với FAILED.")
+                payload = EvtReserveFailedPayload(**payload_dict)
+                await SagaStepHandlers.handle_reserve_failed(session, payload)
 
-            # C. Kho đích đã xác nhận nhập kho thành công -> Hoàn tất Saga
             elif event_type == "EVT_TRANSFER_COMPLETED":
-                order.saga_status = "COMPLETED"
-                db.commit()
-                logger.info(f"[HQ SAGA] Đơn {transfer_id}: Hoàn tất giao dịch chuyển kho (COMPLETED)!")
+                payload = EvtTransferCompletedPayload(**payload_dict)
+                await SagaStepHandlers.handle_transfer_completed(session, payload)
 
-            # D. Kho đích từ chối nhận hàng -> Kích hoạt Giao dịch bù trừ (Rollback)
             elif event_type == "EVT_TRANSFER_REJECTED":
-                order.saga_status = "COMPENSATING"
-                order.error_reason = data.get("reason", "Kho đích từ chối nhận hàng")
-                db.commit()
-                logger.warning(f"[HQ SAGA] Đơn {transfer_id}: Bị từ chối ({order.error_reason}). Kích hoạt bù trừ CMD_RELEASE_STOCK tới {order.source_branch}.")
+                payload = EvtTransferRejectedPayload(**payload_dict)
+                await SagaStepHandlers.handle_transfer_rejected(session, payload)
 
-                # Phát lệnh hoàn trả hàng cho kho nguồn
-                cmd_release = RabbitMQMessage(
-                    event_type="CMD_RELEASE_STOCK",
-                    data=TransferMessageData(
-                        transfer_id=order.transfer_id,
-                        source_branch=order.source_branch,
-                        dest_branch=order.dest_branch,
-                        sku=order.sku,
-                        quantity=order.quantity,
-                        reason=order.error_reason
-                    )
-                )
-                await broker.publish(f"cmd.transfer.release.{order.source_branch}", cmd_release)
-
-            # E. Kho nguồn đã hoàn trả hàng thành công
             elif event_type == "EVT_STOCK_RELEASED":
-                order.saga_status = "CANCELLED_ROLLED_BACK"
-                db.commit()
-                logger.info(f"[HQ SAGA] Đơn {transfer_id}: Đã hoàn tác xong toàn bộ (CANCELLED_ROLLED_BACK).")
+                payload = EvtStockReleasedPayload(**payload_dict)
+                await SagaStepHandlers.handle_stock_released(session, payload)
 
-        except Exception as e:
-            logger.error(f"[HQ CONSUMER] Lỗi xử lý sự kiện: {e}")
-            db.rollback()
-        finally:
-            db.close()
+            # 3. Xử lý sự kiện cập nhật tồn kho toàn cục (Snapshot Sync)
+            elif event_type == "EVT_INVENTORY_UPDATED":
+                payload = EvtInventoryUpdatedPayload(**payload_dict)
+                stmt = select(GlobalInventorySnapshot).where(
+                    GlobalInventorySnapshot.branch_code == payload.branch_code,
+                    GlobalInventorySnapshot.sku == payload.sku
+                )
+                res = await session.execute(stmt)
+                snapshot = res.scalar_one_or_none()
+                if snapshot:
+                    snapshot.available_qty = payload.available_qty
+                    snapshot.reserved_qty = payload.reserved_qty
+                    snapshot.last_synced_at = datetime.now(timezone.utc)
+                else:
+                    new_snapshot = GlobalInventorySnapshot(
+                        branch_code=payload.branch_code,
+                        sku=payload.sku,
+                        available_qty=payload.available_qty,
+                        reserved_qty=payload.reserved_qty,
+                        last_synced_at=datetime.now(timezone.utc)
+                    )
+                    session.add(new_snapshot)
+                logger.info(f"[SNAPSHOT UPDATED] Kho {payload.branch_code} SKU={payload.sku}: Avail={payload.available_qty}, Res={payload.reserved_qty}")
 
-    await broker.subscribe(queue_name, routing_keys, handle_event)
+            else:
+                logger.debug(f"[HQ CONSUME] Sự kiện chưa đăng ký xử lý riêng: {event_type}")
+
+        # Transaction commit tự động khi thoát async with session.begin()

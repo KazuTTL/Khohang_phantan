@@ -1,71 +1,79 @@
 # backend/hq_service/main.py
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from .database import engine, Base, SessionLocal
-from .models import Branch, Product, GlobalInventorySnapshot
-from .routers import catalog, global_inventory, transfers_saga
-from .consumers.hq_event_consumer import start_hq_consumer
-from shared.rabbitmq_client import get_broker
+from fastapi.responses import JSONResponse
 
-def seed_initial_data():
-    """Khởi tạo bảng và nạp dữ liệu mẫu ban đầu nếu chưa có"""
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        if not db.query(Branch).first():
-            branches = [
-                Branch(branch_code="HN", branch_name="Chi nhánh Hà Nội", api_base_url="http://127.0.0.1:8001/api/v1", is_active=True),
-                Branch(branch_code="HCM", branch_name="Chi nhánh TP.HCM", api_base_url="http://127.0.0.1:8002/api/v1", is_active=True)
-            ]
-            db.add_all(branches)
+from hq_service.config import hq_settings
+from hq_service.consumers.dlq_consumer import process_dlq_message
+from hq_service.consumers.hq_event_consumer import process_hq_event
+from hq_service.database import Base, engine
+from hq_service.routers import branches, catalog, global_inventory, stocktakes, transfers
+from hq_service.workers.health_checker import HQHealthChecker
+from hq_service.workers.outbox_worker import HQOutboxWorker
+from shared.logging_conf import setup_logger
+from shared.messaging_topology import DLQ_QUEUE_NAME, get_hq_queue_name
+from shared.rabbitmq_client import RabbitMQClient
 
-        if not db.query(Product).first():
-            products = [
-                Product(sku="LAPTOP-DELL-01", product_name="Laptop Dell XPS 15", unit="Chiếc", price=35000000.0),
-                Product(sku="MACBOOK-AIR-M2", product_name="Apple MacBook Air M2", unit="Chiếc", price=28000000.0),
-                Product(sku="CHUOT-LOGI-MX3", product_name="Chuột Logitech MX Master 3S", unit="Con", price=2200000.0)
-            ]
-            db.add_all(products)
+logger = setup_logger("HQ_SERVICE")
 
-        if not db.query(GlobalInventorySnapshot).first():
-            snapshots = [
-                GlobalInventorySnapshot(branch_code="HN", sku="LAPTOP-DELL-01", available_qty=100, reserved_qty=0),
-                GlobalInventorySnapshot(branch_code="HCM", sku="LAPTOP-DELL-01", available_qty=50, reserved_qty=0),
-                GlobalInventorySnapshot(branch_code="HN", sku="MACBOOK-AIR-M2", available_qty=40, reserved_qty=0),
-                GlobalInventorySnapshot(branch_code="HCM", sku="MACBOOK-AIR-M2", available_qty=30, reserved_qty=0),
-                GlobalInventorySnapshot(branch_code="HN", sku="CHUOT-LOGI-MX3", available_qty=80, reserved_qty=0),
-                GlobalInventorySnapshot(branch_code="HCM", sku="CHUOT-LOGI-MX3", available_qty=60, reserved_qty=0),
-            ]
-            db.add_all(snapshots)
+# Global instances
+rabbitmq_client = RabbitMQClient(hq_settings.RABBITMQ_URL)
+outbox_worker = HQOutboxWorker(rabbitmq_client)
 
-        db.commit()
-    finally:
-        db.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Khởi tạo DB & Seed
-    seed_initial_data()
-    # Kết nối RabbitMQ
-    broker = get_broker()
-    await broker.connect()
-    # Khởi động Consumer nền
-    consumer_task = asyncio.create_task(start_hq_consumer())
+    """Quản lý vòng đời khởi động và kết thúc của Node Trụ sở chính (HQ)"""
+    logger.info("[STARTUP] Đang khởi động Node Trụ sở chính (HQ - Port 8000)...")
+
+    # 1. Khởi tạo bảng CSDL DB_HQ nếu chưa tồn tại
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("[STARTUP] CSDL DB_HQ đã sẵn sàng.")
+
+    # 2. Kết nối RabbitMQ Topic Exchange
+    connected = await rabbitmq_client.connect()
+    
+    # 3. Khởi chạy Outbox Worker và Event Consumers nếu Broker kết nối thành công
+    if connected:
+        await outbox_worker.start()
+        try:
+            # Lắng nghe toàn bộ event từ chi nhánh gửi về HQ: evt.#
+            await rabbitmq_client.subscribe(
+                queue_name=get_hq_queue_name(),
+                binding_keys=["evt.#"],
+                callback=process_hq_event
+            )
+            # Lắng nghe Dead Letter Queue
+            await rabbitmq_client.subscribe(
+                queue_name=DLQ_QUEUE_NAME,
+                binding_keys=["#"],
+                callback=process_dlq_message
+            )
+        except Exception as e:
+            logger.error(f"[STARTUP CONSUMER ERROR] {e}")
+    else:
+        logger.warning("[STARTUP] RabbitMQ chưa sẵn sàng. Outbox Worker sẽ chờ kết nối lại.")
+
     yield
-    # Dọn dẹp tài nguyên
-    consumer_task.cancel()
-    await broker.close()
+
+    # Shutdown
+    logger.info("[SHUTDOWN] Đang dừng Node Trụ sở chính...")
+    await outbox_worker.stop()
+    await rabbitmq_client.close()
+    await engine.dispose()
+    logger.info("[SHUTDOWN] HQ Node đã dừng an toàn.")
+
 
 app = FastAPI(
-    title="HQ Central Warehouse Service (Node Trụ sở chính)",
-    version="1.0.0",
-    description="Dịch vụ Trụ sở chính quản lý Master Data, Global Snapshot và điều phối Saga Orchestration",
+    title="SmartLog Distributed WMS - HQ Node API",
+    description="Node Điều phối Trung tâm & Saga Orchestrator cho Hệ thống Kho Phân tán",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,24 +82,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Gắn Routers theo tiền tố chuẩn /api/v1
+# Exception Handler chuẩn hóa: {"success": False, "data": None, "error": str}
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"[UNHANDLED EXCEPTION] {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "data": None, "error": f"Lỗi máy chủ nội bộ: {str(exc)}"}
+    )
+
+
+# Đăng ký các Router nghiệp vụ
+app.include_router(branches.router, prefix="/api/v1")
 app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(global_inventory.router, prefix="/api/v1")
-app.include_router(transfers_saga.router, prefix="/api/v1")
+app.include_router(transfers.router, prefix="/api/v1")
+app.include_router(stocktakes.router, prefix="/api/v1")
 
-@app.post("/internal/events")
-async def receive_internal_event(req: dict):
-    routing_key = req.get("routing_key", "")
-    data = req.get("data", {})
-    broker = get_broker()
-    await broker._dispatch_mock(routing_key, data)
-    return {"status": "OK"}
 
-@app.get("/health")
-def health_check():
-    return {
-        "status": "UP",
-        "service": "HQ_SERVICE",
-        "port": 8000,
-        "broker_connected": get_broker().is_connected
-    }
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """Kiểm tra sức khỏe dịch vụ và kết nối CSDL / RabbitMQ"""
+    return await HQHealthChecker.check_health(rabbitmq_client)

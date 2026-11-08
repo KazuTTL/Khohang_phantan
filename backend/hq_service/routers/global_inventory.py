@@ -1,66 +1,63 @@
 # backend/hq_service/routers/global_inventory.py
-import httpx
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from ..database import get_db
-from ..models import Branch, Product, GlobalInventorySnapshot
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(tags=["HQ Global Inventory"])
+from hq_service.database import get_db
+from hq_service.dependencies import CurrentUser, get_current_user
+from hq_service.models import Branch, GlobalInventorySnapshot, Product
+from hq_service.schemas import GlobalStockItem, StandardResponse
 
-@router.get("/branches")
-async def list_branches(db: Session = Depends(get_db)):
-    branches = db.query(Branch).all()
-    result = []
-    
-    async with httpx.AsyncClient(timeout=1.0) as client:
-        for b in branches:
-            is_online = False
-            try:
-                # Kiểm tra healthcheck của chi nhánh
-                health_url = f"{b.api_base_url.replace('/api/v1', '')}/health"
-                res = await client.get(health_url)
-                if res.status_code == 200:
-                    is_online = True
-            except Exception:
-                is_online = False
+router = APIRouter(prefix="/global-inventory", tags=["HQ - Global Inventory Snapshot"])
 
-            result.append({
-                "branch_code": b.branch_code,
-                "branch_name": b.branch_name,
-                "api_base_url": b.api_base_url,
-                "is_active": b.is_active,
-                "is_online": is_online
-            })
-    return result
 
-@router.get("/inventory/global")
-def get_global_inventory(db: Session = Depends(get_db)):
-    products = db.query(Product).all()
-    snapshots = db.query(GlobalInventorySnapshot).all()
+@router.get("", response_model=StandardResponse[list[GlobalStockItem]])
+async def get_global_inventory(
+    branch_code: str | None = None,
+    sku: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+) -> StandardResponse[list[GlobalStockItem]]:
+    """
+    Truy vấn bảng tổng hợp tồn kho toàn quốc (Read-Model Snapshot).
+    Được đồng bộ bất đồng bộ từ các sự kiện Outbox của từng Chi nhánh.
+    """
+    stmt = (
+        select(
+            GlobalInventorySnapshot.branch_code,
+            Branch.branch_name,
+            GlobalInventorySnapshot.sku,
+            Product.product_name,
+            Product.unit,
+            GlobalInventorySnapshot.available_qty,
+            GlobalInventorySnapshot.reserved_qty,
+            GlobalInventorySnapshot.last_synced_at
+        )
+        .outerjoin(Branch, GlobalInventorySnapshot.branch_code == Branch.branch_code)
+        .outerjoin(Product, GlobalInventorySnapshot.sku == Product.sku)
+    )
 
-    # Nhóm snapshot theo SKU
-    snap_map = {}
-    for s in snapshots:
-        if s.sku not in snap_map:
-            snap_map[s.sku] = {}
-        snap_map[s.sku][s.branch_code] = {
-            "available": s.available_qty,
-            "reserved": s.reserved_qty
-        }
+    if branch_code:
+        stmt = stmt.where(GlobalInventorySnapshot.branch_code == branch_code.strip().upper())
+    if sku:
+        stmt = stmt.where(GlobalInventorySnapshot.sku == sku.strip())
 
-    response = []
-    for p in products:
-        b_data = snap_map.get(p.sku, {})
-        total_avail = sum(item["available"] for item in b_data.values())
-        total_res = sum(item["reserved"] for item in b_data.values())
+    stmt = stmt.order_by(GlobalInventorySnapshot.branch_code.asc(), GlobalInventorySnapshot.sku.asc())
 
-        response.append({
-            "sku": p.sku,
-            "product_name": p.product_name,
-            "unit": p.unit,
-            "price": p.price,
-            "total_available": total_avail,
-            "total_reserved": total_res,
-            "branches": b_data
-        })
-    return response
+    res = await db.execute(stmt)
+    rows = res.all()
+
+    items = [
+        GlobalStockItem(
+            branch_code=r[0],
+            branch_name=r[1] or r[0],
+            sku=r[2],
+            product_name=r[3] or r[2],
+            unit=r[4] or "Chiếc",
+            available_qty=r[5],
+            reserved_qty=r[6],
+            last_synced_at=r[7]
+        )
+        for r in rows
+    ]
+    return StandardResponse(success=True, data=items)

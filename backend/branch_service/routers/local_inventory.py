@@ -1,68 +1,127 @@
 # backend/branch_service/routers/local_inventory.py
-import os
-import uuid
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from ..database import get_db
-from ..models import LocalProduct, LocalInventory, StockLedger
-from ..services.stock_service import StockService
-from shared.event_schemas import LocalStockAdjust
+from fastapi import APIRouter, Depends, Header
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-BRANCH_CODE = os.getenv("BRANCH_CODE", "HN")
-stock_service = StockService(BRANCH_CODE)
+from branch_service.config import branch_settings
+from branch_service.database import get_db
+from branch_service.models import LocalInventory, LocalProduct, StockLedger
+from branch_service.schemas import (
+    AdjustStockRequest, AdjustStockResponse, LocalInventoryItem, StandardResponse
+)
+from branch_service.services.stock_service import StockService
 
-router = APIRouter(tags=["Branch Local Inventory"])
+router = APIRouter(prefix="/inventory", tags=["Branch - Local Inventory (Local Autonomy)"])
 
-@router.get("/inventory")
-def get_local_inventory(db: Session = Depends(get_db)):
-    """Tra cứu tồn kho thực tế nội bộ tại chi nhánh hiện tại"""
-    products = db.query(LocalProduct).all()
-    prod_map = {p.sku: p for p in products}
 
-    inv_records = db.query(LocalInventory).all()
-    result = []
-    for inv in inv_records:
-        p = prod_map.get(inv.sku)
-        result.append({
-            "sku": inv.sku,
-            "product_name": p.product_name if p else inv.sku,
-            "unit": p.unit if p else "Chiếc",
-            "available_qty": inv.available_qty,
-            "reserved_qty": inv.reserved_qty,
-            "version": inv.version,
-            "updated_at": inv.updated_at.isoformat() if inv.updated_at else None
-        })
-    return result
-
-@router.post("/inventory/adjust")
-def adjust_inventory(payload: LocalStockAdjust, db: Session = Depends(get_db)):
-    """
-    Tự trị cục bộ (Local Autonomy):
-    Nhập kho hoặc xuất kho bán lẻ tại chỗ.
-    Vận hành 100% độc lập ngay cả khi Trụ sở chính (HQ) hoặc mạng Internet bị ngắt kết nối!
-    """
-    ref_id = payload.reference_id or f"ADJ-{uuid.uuid4().hex[:12].upper()}"
-    res = stock_service.adjust_stock(
-        db=db,
-        sku=payload.sku,
-        change_type=payload.change_type,
-        quantity=payload.quantity,
-        reference_id=ref_id
+@router.get("", response_model=StandardResponse[list[LocalInventoryItem]])
+async def get_local_inventory(
+    db: AsyncSession = Depends(get_db),
+    x_user_id: str | None = Header(None)
+) -> StandardResponse[list[LocalInventoryItem]]:
+    """Tra cứu tồn kho cục bộ tại chi nhánh (Local Autonomy)"""
+    stmt = (
+        select(
+            LocalInventory.sku,
+            LocalProduct.product_name,
+            LocalProduct.unit,
+            LocalInventory.available_qty,
+            LocalInventory.reserved_qty,
+            LocalInventory.updated_at
+        )
+        .outerjoin(LocalProduct, LocalInventory.sku == LocalProduct.sku)
+        .order_by(LocalInventory.sku.asc())
     )
+    res = await db.execute(stmt)
+    rows = res.all()
 
-    if res.get("status") == "FAILED":
-        raise HTTPException(status_code=400, detail=res.get("reason", "Thao tác kho thất bại"))
+    items = [
+        LocalInventoryItem(
+            sku=r[0],
+            product_name=r[1] or r[0],
+            unit=r[2] or "Chiếc",
+            available_qty=r[3],
+            reserved_qty=r[4],
+            updated_at=r[5]
+        )
+        for r in rows
+    ]
+    return StandardResponse(success=True, data=items)
 
-    return {
-        **res,
-        "reference_id": ref_id,
-        "sku": payload.sku,
-        "branch": BRANCH_CODE,
-        "message": "Điều chỉnh tồn kho cục bộ thành công (Đã đưa vào Outbox để đồng bộ)"
-    }
 
-@router.get("/ledger")
-def get_stock_ledger(db: Session = Depends(get_db)):
-    """Xem lịch sử ghi sổ biến động kho (Audit Trail & Idempotency Key)"""
-    records = db.query(StockLedger).order_by(StockLedger.ledger_id.desc()).limit(100).all()
-    return records
+@router.post("/adjust", response_model=StandardResponse[AdjustStockResponse])
+async def adjust_local_stock(
+    req: AdjustStockRequest,
+    db: AsyncSession = Depends(get_db),
+    x_user_id: str | None = Header(None)
+) -> StandardResponse[AdjustStockResponse]:
+    """
+    Thực hiện biến động tồn kho tại chỗ (LOCAL_IN hoặc LOCAL_OUT).
+    Minh chứng tính năng TỰ TRỊ CỤC BỘ (Local Autonomy):
+    Hoạt động bình thường kể cả khi ngắt kết nối với HQ và RabbitMQ.
+    """
+    change_type = req.change_type.strip().upper()
+    if change_type not in ["LOCAL_IN", "LOCAL_OUT"]:
+        return StandardResponse(success=False, error="change_type chỉ chấp nhận LOCAL_IN hoặc LOCAL_OUT.")
+
+    try:
+        ok, reason, data = await StockService.adjust_stock(
+            session=db,
+            sku=req.sku.strip(),
+            change_type=change_type,
+            quantity=req.quantity,
+            idempotency_key=req.idempotency_key,
+            note=req.note
+        )
+
+        if not ok:
+            return StandardResponse(success=False, error=reason)
+
+        await db.commit()
+
+        return StandardResponse(
+            success=True,
+            data=AdjustStockResponse(
+                sku=req.sku.strip(),
+                change_type=change_type,
+                quantity=req.quantity,
+                available_qty=data["available_qty"],
+                reserved_qty=data["reserved_qty"],
+                reference_id=data["reference_id"]
+            )
+        )
+    except Exception as e:
+        await db.rollback()
+        return StandardResponse(success=False, error=f"Lỗi biến động kho: {str(e)}")
+
+
+@router.get("/ledger", response_model=StandardResponse[list[dict]])
+async def get_stock_ledger(
+    sku: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+) -> StandardResponse[list[dict]]:
+    """Tra cứu nhật ký biến động kho cục bộ (Stock Ledger)"""
+    stmt = select(StockLedger).order_by(StockLedger.ledger_id.desc()).limit(limit)
+    if sku:
+        stmt = stmt.where(StockLedger.sku == sku.strip())
+
+    res = await db.execute(stmt)
+    ledgers = res.scalars().all()
+
+    data = [
+        {
+            "ledger_id": l.ledger_id,
+            "transaction_type": l.transaction_type,
+            "sku": l.sku,
+            "quantity": l.quantity,
+            "available_after": l.available_after,
+            "reserved_after": l.reserved_after,
+            "reference_id": l.reference_id,
+            "idempotency_key": l.idempotency_key,
+            "note": l.note,
+            "created_at": l.created_at
+        }
+        for l in ledgers
+    ]
+    return StandardResponse(success=True, data=data)

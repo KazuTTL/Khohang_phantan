@@ -1,22 +1,32 @@
 # backend/branch_service/database.py
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from collections.abc import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base
 
-BRANCH_CODE = os.getenv("BRANCH_CODE", "HN")
-DEFAULT_SQLITE = f"sqlite:///./db_branch_{BRANCH_CODE.lower()}.db"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_SQLITE)
+from branch_service.config import branch_settings
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+# NGUYÊN TẮC 1: Mỗi service chỉ có 1 AsyncEngine trỏ tới CSDL của nó (DB_Branch_HN hoặc DB_Branch_HCM)
+engine = create_async_engine(
+    branch_settings.get_database_url(),
+    echo=False,
+    future=True,
+    pool_pre_ping=True
+)
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False
+)
 
 Base = declarative_base()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency cung cấp session DB cục bộ độc lập cho từng request tại chi nhánh"""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
