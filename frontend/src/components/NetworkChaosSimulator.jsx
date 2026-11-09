@@ -52,7 +52,7 @@ export default function NetworkChaosSimulator() {
             Bộ Giả Lập & Chứng Minh Đặc Tính Phân Tán (Distributed System Properties)
           </h3>
           <p className="text-xs text-slate-400 mt-1">
-            Minh họa trực quan các cơ chế chịu lỗi, tự phục hồi và tính nhất quán eventual consistency phục vụ bảo vệ đồ án.
+            Mô phỏng trực quan các cơ chế chịu lỗi, tự phục hồi và tính nhất quán eventual consistency của hệ thống phân tán.
           </p>
         </div>
       </div>

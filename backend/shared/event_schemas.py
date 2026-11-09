@@ -51,6 +51,18 @@ class ProductCreate(BaseModel):
     unit: str = "Chiếc"
     price: float = 0.0
     category: Optional[str] = "Điện tử"
+    initial_stock: Optional[Dict[str, int]] = Field(default_factory=dict, description="Tồn đầu kỳ theo chi nhánh {'HN': 50, 'HCM': 30}")
+    min_threshold: int = Field(default=10, description="Định mức tồn tối thiểu")
+    max_threshold: int = Field(default=200, description="Định mức tồn tối đa")
+
+# HQ: Cập nhật thông tin sản phẩm
+class ProductUpdate(BaseModel):
+    product_name: str
+    unit: str = "Chiếc"
+    price: float = 0.0
+    category: Optional[str] = None
+    min_threshold: Optional[int] = None
+    max_threshold: Optional[int] = None
 
 # HQ: Tạo lệnh điều chuyển kho Saga
 class TransferOrderCreate(BaseModel):

@@ -40,6 +40,13 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload)
   }),
+  updateProduct: (sku, payload) => fetchJson(`${HQ_URL}/api/v1/products/${sku}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  }),
+  deleteProduct: (sku) => fetchJson(`${HQ_URL}/api/v1/products/${sku}`, {
+    method: 'DELETE'
+  }),
   login: (credentials) => fetchJson(`${HQ_URL}/api/v1/auth/login`, {
     method: 'POST',
     body: JSON.stringify(credentials)

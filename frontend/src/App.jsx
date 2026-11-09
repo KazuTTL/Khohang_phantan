@@ -98,7 +98,7 @@ export default function App() {
                 </span>
               </h1>
               <p className="text-xs text-slate-400">
-                Hệ thống Quản lý Kho hàng Phân tán Đa Chi nhánh (Đồ án Môn UDPT)
+                Hệ thống Quản lý Kho hàng Phân tán Đa Chi nhánh
               </p>
             </div>
           </div>
@@ -212,7 +212,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-slate-900/60 border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
-        Đồ án Phát triển Ứng dụng Phân tán • Nhóm 3 Thành viên • Kiến trúc: FastAPI + SQLite/SQL Server + RabbitMQ + ReactJS
+        Distributed Warehouse Management System • Kiến trúc Microservices: FastAPI + RabbitMQ + ReactJS
       </footer>
     </div>
   );

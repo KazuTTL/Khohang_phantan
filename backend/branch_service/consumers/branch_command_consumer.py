@@ -10,7 +10,7 @@ Lắng nghe các lệnh điều phối từ Saga Coordinator (HQ) hoặc sự ki
 import os
 import logging
 from typing import Dict, Any
-from ..models import IncomingTransfer, LocalProduct, LocalInventory
+from ..models import IncomingTransfer, LocalProduct, LocalInventory, StockLedger
 from ..database import SessionLocal
 from ..services.stock_service import StockService
 from ..routers.incoming_transfers import incoming_orders
@@ -28,7 +28,10 @@ async def start_branch_consumer():
         f"cmd.transfer.release.{BRANCH_CODE}",
         f"cmd.transfer.import.{BRANCH_CODE}",
         "evt.transfer.completed",
-        "evt.catalog.product_created"
+        "evt.catalog.*",
+        "evt.catalog.product_created",
+        "evt.catalog.product_updated",
+        "evt.catalog.product_deleted"
     ]
 
     async def handle_command(msg_dict: Dict[str, Any]):
@@ -112,19 +115,64 @@ async def start_branch_consumer():
                         unit=data.get("unit", "Chiếc")
                     )
                     db.add(p)
+
+                initial_stock_map = data.get("initial_stock", {})
+                init_qty = 0
+                if isinstance(initial_stock_map, dict):
+                    init_qty = int(initial_stock_map.get(BRANCH_CODE, 0))
+
+                min_th = int(data.get("min_threshold", 10))
+                max_th = int(data.get("max_threshold", 200))
+
                 existing_inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
                 if not existing_inv:
                     inv = LocalInventory(
                         sku=sku,
-                        available_qty=0,
+                        available_qty=init_qty,
                         reserved_qty=0,
-                        min_threshold=10,
-                        max_threshold=200,
+                        min_threshold=min_th,
+                        max_threshold=max_th,
                         version=1
                     )
                     db.add(inv)
+                    if init_qty > 0:
+                        ledger = StockLedger(
+                            reference_id=f"INIT-{sku}-{BRANCH_CODE}",
+                            sku=sku,
+                            change_type="INITIAL_STOCK",
+                            quantity=init_qty,
+                            partner_name="Trụ sở chính HQ",
+                            note="Tồn kho đầu kỳ khi tạo sản phẩm"
+                        )
+                        db.add(ledger)
                 db.commit()
-                logger.info(f"[{BRANCH_CODE}] Đã tự động đồng bộ mặt hàng mới '{sku}' từ Master Catalog.")
+                logger.info(f"[{BRANCH_CODE}] Đã tự động đồng bộ mặt hàng mới '{sku}' từ Master Catalog (Tồn ban đầu: {init_qty}).")
+
+            # 6. Đồng bộ cập nhật thông tin sản phẩm từ Master Data Catalog
+            elif event_type == "EVT_PRODUCT_UPDATED":
+                p = db.query(LocalProduct).filter(LocalProduct.sku == sku).first()
+                if p:
+                    p.product_name = data.get("product_name", p.product_name)
+                    p.unit = data.get("unit", p.unit)
+                inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
+                if inv:
+                    if data.get("min_threshold") is not None:
+                        inv.min_threshold = int(data.get("min_threshold"))
+                    if data.get("max_threshold") is not None:
+                        inv.max_threshold = int(data.get("max_threshold"))
+                db.commit()
+                logger.info(f"[{BRANCH_CODE}] Đã đồng bộ cập nhật sản phẩm '{sku}'.")
+
+            # 7. Đồng bộ xóa sản phẩm từ Master Data Catalog
+            elif event_type == "EVT_PRODUCT_DELETED":
+                inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
+                if inv and inv.available_qty == 0 and inv.reserved_qty == 0:
+                    db.delete(inv)
+                p = db.query(LocalProduct).filter(LocalProduct.sku == sku).first()
+                if p:
+                    db.delete(p)
+                db.commit()
+                logger.info(f"[{BRANCH_CODE}] Đã đồng bộ xóa sản phẩm '{sku}'.")
 
         except Exception as e:
             logger.error(f"[{BRANCH_CODE} CONSUMER] Lỗi xử lý command: {e}")
