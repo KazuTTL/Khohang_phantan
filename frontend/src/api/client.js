@@ -36,10 +36,26 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload)
   }),
+  createProduct: (payload) => fetchJson(`${HQ_URL}/api/v1/products`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+  login: (credentials) => fetchJson(`${HQ_URL}/api/v1/auth/login`, {
+    method: 'POST',
+    body: JSON.stringify(credentials)
+  }),
 
   // Branch Local Endpoints
   getLocalInventory: (baseUrl) => fetchJson(`${baseUrl}/api/v1/inventory`),
   adjustStock: (baseUrl, payload) => fetchJson(`${baseUrl}/api/v1/inventory/adjust`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+  updateThresholds: (baseUrl, sku, payload) => fetchJson(`${baseUrl}/api/v1/inventory/${sku}/thresholds`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  }),
+  auditStock: (baseUrl, payload) => fetchJson(`${baseUrl}/api/v1/inventory/audit`, {
     method: 'POST',
     body: JSON.stringify(payload)
   }),

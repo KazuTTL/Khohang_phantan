@@ -60,19 +60,19 @@ def run_test():
         assert res_reject.status_code == 200
         print(f" -> Kho HCM đã từ chối nhận hàng thành công: {res_reject.json().get('message')}")
 
-        # Đợi để HQ phát lệnh bù trừ CMD_RELEASE_STOCK và HN hoàn trả
-        print(" -> Đang chờ Saga Coordinator phát lệnh Bù trừ (Compensating Transaction)...")
-        for _ in range(8):
+        # Đợi để HQ phát lệnh bù trừ CMD_RELEASE_STOCK, HN hoàn trả và Outbox đồng bộ về HQ
+        print(" -> Đang chờ Saga Coordinator phát lệnh Bù trừ và Outbox đồng bộ hoàn tác...")
+        hn_inv_post = None
+        order_post = None
+        for _ in range(15):
             time.sleep(1)
-            hn_inv_check = {item["sku"]: item for item in client.get(f"{HN_URL}/inventory").json()}
-            if hn_inv_check[sku]["available_qty"] == hn_avail_pre:
+            hn_inv_post = {item["sku"]: item for item in client.get(f"{HN_URL}/inventory").json()}
+            order_post = client.get(f"{HQ_URL}/transfers/{transfer_id}").json()
+            if hn_inv_post[sku]["available_qty"] == hn_avail_pre and order_post.get("saga_status") == "CANCELLED_ROLLED_BACK":
                 break
 
         # 5. Kiểm tra kết quả hoàn trả (Rollback verification)
         print("\n[Bước 5] Kiểm tra tồn kho Kho HN sau khi giao dịch bù trừ hoàn tất...")
-        hn_inv_post = {item["sku"]: item for item in client.get(f"{HN_URL}/inventory").json()}
-        order_post = client.get(f"{HQ_URL}/transfers/{transfer_id}").json()
-
         print(f" -> Kho HN sau bù trừ: Available = {hn_inv_post[sku]['available_qty']} (Đã hoàn lại {qty}), Reserved = {hn_inv_post[sku]['reserved_qty']}")
         print(f" -> Trạng thái Saga cuối cùng tại HQ: {order_post['saga_status']} (Lý do: {order_post.get('error_reason')})")
 

@@ -10,6 +10,7 @@ Lắng nghe các lệnh điều phối từ Saga Coordinator (HQ) hoặc sự ki
 import os
 import logging
 from typing import Dict, Any
+from ..models import IncomingTransfer, LocalProduct, LocalInventory
 from ..database import SessionLocal
 from ..services.stock_service import StockService
 from ..routers.incoming_transfers import incoming_orders
@@ -26,7 +27,8 @@ async def start_branch_consumer():
         f"cmd.transfer.reserve.{BRANCH_CODE}",
         f"cmd.transfer.release.{BRANCH_CODE}",
         f"cmd.transfer.import.{BRANCH_CODE}",
-        "evt.transfer.completed"
+        "evt.transfer.completed",
+        "evt.catalog.product_created"
     ]
 
     async def handle_command(msg_dict: Dict[str, Any]):
@@ -64,6 +66,19 @@ async def start_branch_consumer():
 
             # 3. Thông báo kiện hàng đang đến chi nhánh đích
             elif event_type == "CMD_IMPORT_TRANSFER":
+                # Lưu bền vững vào CSDL của chi nhánh
+                existing_inc = db.query(IncomingTransfer).filter(IncomingTransfer.transfer_id == transfer_id).first()
+                if not existing_inc:
+                    inc_order = IncomingTransfer(
+                        transfer_id=transfer_id,
+                        source_branch=data.get("source_branch"),
+                        dest_branch=BRANCH_CODE,
+                        sku=sku,
+                        quantity=quantity,
+                        status="WAITING_CONFIRMATION"
+                    )
+                    db.add(inc_order)
+                    db.commit()
                 incoming_orders[transfer_id] = {
                     "transfer_id": transfer_id,
                     "source_branch": data.get("source_branch"),
@@ -72,7 +87,7 @@ async def start_branch_consumer():
                     "quantity": quantity,
                     "status": "WAITING_CONFIRMATION"
                 }
-                logger.info(f"[{BRANCH_CODE}] Kiện hàng {transfer_id} đang chờ xác nhận nhập kho.")
+                logger.info(f"[{BRANCH_CODE}] Kiện hàng {transfer_id} đã lưu CSDL và đang chờ xác nhận nhập kho.")
 
             # 4. Khi toàn bộ giao dịch chuyển kho hoàn tất -> Kho nguồn tất toán trừ Reserved
             elif event_type == "EVT_TRANSFER_COMPLETED":
@@ -86,6 +101,30 @@ async def start_branch_consumer():
                         reference_id=ref_id,
                         transfer_id=transfer_id
                     )
+
+            # 5. Đồng bộ sản phẩm mới từ Master Data Catalog
+            elif event_type == "EVT_PRODUCT_CREATED":
+                existing_p = db.query(LocalProduct).filter(LocalProduct.sku == sku).first()
+                if not existing_p:
+                    p = LocalProduct(
+                        sku=sku,
+                        product_name=data.get("product_name", sku),
+                        unit=data.get("unit", "Chiếc")
+                    )
+                    db.add(p)
+                existing_inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
+                if not existing_inv:
+                    inv = LocalInventory(
+                        sku=sku,
+                        available_qty=0,
+                        reserved_qty=0,
+                        min_threshold=10,
+                        max_threshold=200,
+                        version=1
+                    )
+                    db.add(inv)
+                db.commit()
+                logger.info(f"[{BRANCH_CODE}] Đã tự động đồng bộ mặt hàng mới '{sku}' từ Master Catalog.")
 
         except Exception as e:
             logger.error(f"[{BRANCH_CODE} CONSUMER] Lỗi xử lý command: {e}")

@@ -64,6 +64,17 @@ Tất cả 4 kịch bản kiểm thử bảo vệ đồ án đã được chạy
   4. 7 yêu cầu còn lại bị từ chối với lý do "Tồn kho không đủ để xuất bán".
   5. Tồn kho thực tế còn lại đúng 5 sản phẩm, tuyệt đối không bị âm kho.
 
+### Kịch bản 5: Các tính năng nâng cấp toàn diện (Phương án C - Nhánh dev)
+- **Tệp kiểm thử:** `tests/test_new_enhancements.py`
+- **Kết quả:** `PASSED`
+- **Diễn biến:**
+  1. Xác thực người dùng và phân quyền (JWT / RBAC) qua `/api/v1/auth/login` và `/api/v1/auth/me`.
+  2. Tạo mới sản phẩm tại HQ và tự động phát tán đồng bộ sang các chi nhánh qua sự kiện `evt.catalog.product_created`.
+  3. Thiết lập định mức min/max và tự động gắn cờ cảnh báo `is_low_stock` khi tồn kho dưới định mức.
+  4. Nhập kho và xuất bán lưu vết đối tác Nhà cung cấp / Khách hàng vào sổ cái `Stock_Ledger`.
+  5. Kiểm kê kho thực tế, đối soát sổ sách và tự động ghi sổ chênh lệch `AUDIT_ADJUST`.
+  6. Bền bỉ hóa kiện hàng điều chuyển vào bảng `Incoming_Transfers` trong CSDL chi nhánh đích, đảm bảo không mất dữ liệu khi sập nguồn (Crash Recovery).
+
 ---
 
 ## 3. Lệnh Dừng và Khởi Động Lại Hệ Thống

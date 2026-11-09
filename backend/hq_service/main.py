@@ -7,7 +7,9 @@ from .database import engine, Base, SessionLocal
 from .models import Branch, Product, GlobalInventorySnapshot
 from .routers import catalog, global_inventory, transfers_saga
 from .consumers.hq_event_consumer import start_hq_consumer
+from .services.saga_timeout_worker import run_saga_timeout_worker
 from shared.rabbitmq_client import get_broker
+from shared.auth_router import auth_router
 
 def seed_initial_data():
     """Khởi tạo bảng và nạp dữ liệu mẫu ban đầu nếu chưa có"""
@@ -51,11 +53,13 @@ async def lifespan(app: FastAPI):
     # Kết nối RabbitMQ
     broker = get_broker()
     await broker.connect()
-    # Khởi động Consumer nền
+    # Khởi động Consumer nền và Timeout Worker
     consumer_task = asyncio.create_task(start_hq_consumer())
+    timeout_task = asyncio.create_task(run_saga_timeout_worker())
     yield
     # Dọn dẹp tài nguyên
     consumer_task.cancel()
+    timeout_task.cancel()
     await broker.close()
 
 app = FastAPI(
@@ -78,6 +82,7 @@ app.add_middleware(
 app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(global_inventory.router, prefix="/api/v1")
 app.include_router(transfers_saga.router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 
 @app.post("/internal/events")
 async def receive_internal_event(req: dict):

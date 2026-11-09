@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base, SessionLocal
 from .models import LocalProduct, LocalInventory
 from .routers import local_inventory, incoming_transfers
+from shared.auth_router import auth_router
 from .consumers.branch_command_consumer import start_branch_consumer
 from .services.outbox_worker import run_outbox_worker
 from shared.rabbitmq_client import get_broker
@@ -77,6 +78,7 @@ app.add_middleware(
 
 app.include_router(local_inventory.router, prefix="/api/v1")
 app.include_router(incoming_transfers.router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 
 @app.post("/internal/events")
 async def receive_internal_event(req: dict):

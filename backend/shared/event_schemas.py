@@ -50,6 +50,7 @@ class ProductCreate(BaseModel):
     product_name: str
     unit: str = "Chiếc"
     price: float = 0.0
+    category: Optional[str] = "Điện tử"
 
 # HQ: Tạo lệnh điều chuyển kho Saga
 class TransferOrderCreate(BaseModel):
@@ -69,12 +70,35 @@ class TransferOrderResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+# Branch: Cập nhật định mức tồn kho
+class StockThresholdUpdate(BaseModel):
+    min_threshold: int = Field(ge=0, description="Định mức tối thiểu")
+    max_threshold: int = Field(gt=0, description="Định mức tối đa")
+
+# Branch: Phiếu kiểm kê kho
+class StockAuditRequest(BaseModel):
+    sku: str
+    actual_qty: int = Field(ge=0, description="Số lượng kiểm kê thực tế tại kệ")
+    note: Optional[str] = "Kiểm kê định kỳ"
+
 # Branch: Điều chỉnh xuất nhập tại chỗ (Local Autonomy)
 class LocalStockAdjust(BaseModel):
     sku: str
     change_type: str # LOCAL_IN, LOCAL_OUT
     quantity: int = Field(gt=0, description="Số lượng điều chỉnh phải lớn hơn 0")
     reference_id: Optional[str] = None # Idempotency key
+    partner_name: Optional[str] = None # Nhà cung cấp hoặc Khách hàng
+    note: Optional[str] = None # Ghi chú hóa đơn / phiếu xuất nhập
+
+# Xác thực người dùng (Auth)
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: Dict[str, Any]
 
 # Chi nhánh đích: Xác nhận hoặc từ chối nhận hàng
 class TransferDecisionRequest(BaseModel):

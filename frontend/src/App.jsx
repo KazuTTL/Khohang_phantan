@@ -7,9 +7,15 @@ import LocalBranchPanel from './components/LocalBranchPanel';
 import TransferOrderForm from './components/TransferOrderForm';
 import IncomingTransfersTable from './components/IncomingTransfersTable';
 import SagaTimelineModal from './components/SagaTimelineModal';
+import NetworkChaosSimulator from './components/NetworkChaosSimulator';
 
 export default function App() {
   const [currentRole, setCurrentRole] = useState('HQ'); // 'HQ' | 'HN' | 'HCM'
+  const [currentUser, setCurrentUser] = useState({
+    username: 'admin',
+    role: 'HQ_MANAGER',
+    full_name: 'Quản trị viên Trụ sở (HQ)'
+  });
   const [nodesStatus, setNodesStatus] = useState({ hq: false, hn: false, hcm: false });
   const [globalStock, setGlobalStock] = useState([]);
   const [transfers, setTransfers] = useState([]);
@@ -52,6 +58,29 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const handleRoleChange = (role) => {
+    setCurrentRole(role);
+    if (role === 'HQ') {
+      setCurrentUser({
+        username: 'admin',
+        role: 'HQ_MANAGER',
+        full_name: 'Quản trị viên Trụ sở (HQ)'
+      });
+    } else if (role === 'HN') {
+      setCurrentUser({
+        username: 'manager_hn',
+        role: 'BRANCH_MANAGER',
+        full_name: 'Trưởng kho Hà Nội'
+      });
+    } else {
+      setCurrentUser({
+        username: 'manager_hcm',
+        role: 'BRANCH_MANAGER',
+        full_name: 'Trưởng kho TP.HCM'
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Header */}
@@ -65,7 +94,7 @@ export default function App() {
               <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-2">
                 DISTRIBUTED WMS
                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  Saga + Outbox
+                  Saga + Outbox + RBAC
                 </span>
               </h1>
               <p className="text-xs text-slate-400">
@@ -74,45 +103,56 @@ export default function App() {
             </div>
           </div>
 
-          {/* Role Switcher */}
-          <div className="flex items-center bg-slate-800/80 p-1 rounded-xl border border-slate-700/80 shadow-inner self-start md:self-auto">
-            <span className="text-xs font-semibold px-3 text-slate-400 flex items-center gap-1.5">
-              <i className="fa-solid fa-user-tag text-indigo-400"></i>
-              Góc nhìn:
-            </span>
-            <button
-              onClick={() => setCurrentRole('HQ')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                currentRole === 'HQ'
-                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <i className="fa-solid fa-building-columns"></i>
-              Trụ sở chính (HQ - 8000)
-            </button>
-            <button
-              onClick={() => setCurrentRole('HN')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                currentRole === 'HN'
-                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <i className="fa-solid fa-map-pin"></i>
-              Kho Hà Nội (8001)
-            </button>
-            <button
-              onClick={() => setCurrentRole('HCM')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                currentRole === 'HCM'
-                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <i className="fa-solid fa-map-pin"></i>
-              Kho TP.HCM (8002)
-            </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* User Session Badge */}
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700 text-xs">
+              <i className="fa-solid fa-user-shield text-indigo-400"></i>
+              <div>
+                <span className="font-bold text-slate-200">{currentUser.full_name}</span>
+                <span className="text-[10px] text-slate-400 block font-mono">@{currentUser.username} ({currentUser.role})</span>
+              </div>
+            </div>
+
+            {/* Role Switcher */}
+            <div className="flex items-center bg-slate-800/80 p-1 rounded-xl border border-slate-700/80 shadow-inner self-start md:self-auto">
+              <span className="text-xs font-semibold px-3 text-slate-400 flex items-center gap-1.5">
+                <i className="fa-solid fa-user-tag text-indigo-400"></i>
+                Vai trò:
+              </span>
+              <button
+                onClick={() => handleRoleChange('HQ')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  currentRole === 'HQ'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <i className="fa-solid fa-building-columns"></i>
+                Trụ sở chính (HQ - 8000)
+              </button>
+              <button
+                onClick={() => handleRoleChange('HN')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  currentRole === 'HN'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <i className="fa-solid fa-map-pin"></i>
+                Kho Hà Nội (8001)
+              </button>
+              <button
+                onClick={() => handleRoleChange('HCM')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  currentRole === 'HCM'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/50'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+              >
+                <i className="fa-solid fa-map-pin"></i>
+                Kho TP.HCM (8002)
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -121,6 +161,9 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full">
         {/* Node Status Banner */}
         <NodeStatusBanner nodesStatus={nodesStatus} />
+
+        {/* Distributed Properties & Chaos Simulator */}
+        <NetworkChaosSimulator />
 
         {/* Nội dung theo từng vai trò */}
         {currentRole === 'HQ' ? (
@@ -169,7 +212,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-slate-900/60 border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
-        Đồ án Phát triển Ứng dụng Phân tán • Nhóm 3 Thành viên • Kiến trúc: FastAPI + SQL Server + RabbitMQ + ReactJS
+        Đồ án Phát triển Ứng dụng Phân tán • Nhóm 3 Thành viên • Kiến trúc: FastAPI + SQLite/SQL Server + RabbitMQ + ReactJS
       </footer>
     </div>
   );

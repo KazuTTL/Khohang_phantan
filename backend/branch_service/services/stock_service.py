@@ -9,6 +9,7 @@ Stock Service: Quản lý giao dịch kho cục bộ tại Chi nhánh
 import json
 import logging
 import threading
+import uuid
 from sqlalchemy.orm import Session
 from ..models import LocalInventory, StockLedger, OutboxEvent
 
@@ -186,7 +187,7 @@ class StockService:
             logger.info(f"[{self.branch_code}] NHẬP KHO ĐIỀU CHUYỂN: SKU={sku}, Qty={quantity}, Đã phát EVT_TRANSFER_COMPLETED")
             return True
 
-    def adjust_stock(self, db: Session, sku: str, change_type: str, quantity: int, reference_id: str) -> dict:
+    def adjust_stock(self, db: Session, sku: str, change_type: str, quantity: int, reference_id: str, partner_name: str = None, note: str = None) -> dict:
         """Tự trị cục bộ (Local Autonomy): Nhập kho mua mới hoặc Xuất bán lẻ độc lập tại chỗ"""
         with _stock_mutex:
             existing = db.query(StockLedger).filter(StockLedger.reference_id == reference_id).first()
@@ -214,7 +215,9 @@ class StockService:
                 reference_id=reference_id,
                 sku=sku,
                 change_type=change_type,
-                quantity=quantity
+                quantity=quantity,
+                partner_name=partner_name,
+                note=note
             )
             db.add(ledger)
             self._queue_inventory_sync(db, sku, inv.available_qty, inv.reserved_qty)
@@ -222,3 +225,40 @@ class StockService:
 
             logger.info(f"[{self.branch_code}] TỰ TRỊ CỤC BỘ ({change_type}): SKU={sku}, Qty={quantity}, Tồn mới={inv.available_qty}")
             return {"status": "SUCCESS", "is_duplicate": False, "available_qty": inv.available_qty}
+
+    def audit_stock(self, db: Session, sku: str, actual_qty: int, note: str = "Kiểm kê định kỳ") -> dict:
+        """Kiểm kê số lượng thực tế và điều chỉnh chênh lệch tồn kho (Inventory Stock-taking)"""
+        with _stock_mutex:
+            inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).with_for_update().first()
+            if not inv:
+                inv = LocalInventory(sku=sku, available_qty=actual_qty, reserved_qty=0, version=1)
+                db.add(inv)
+                variance = actual_qty
+                old_qty = 0
+            else:
+                old_qty = inv.available_qty
+                variance = actual_qty - old_qty
+                inv.available_qty = actual_qty
+                inv.version += 1
+
+            ref_id = f"AUDIT-{uuid.uuid4().hex[:10].upper()}"
+            ledger = StockLedger(
+                reference_id=ref_id,
+                sku=sku,
+                change_type="AUDIT_ADJUST",
+                quantity=variance,
+                note=f"{note} (Sổ sách: {old_qty}, Thực tế: {actual_qty}, Chênh lệch: {variance:+d})"
+            )
+            db.add(ledger)
+            self._queue_inventory_sync(db, sku, inv.available_qty, inv.reserved_qty)
+            db.commit()
+
+            logger.info(f"[{self.branch_code}] KIỂM KÊ KHO: SKU={sku}, Cũ={old_qty}, Mới={actual_qty}, Lệch={variance:+d}")
+            return {
+                "status": "SUCCESS",
+                "sku": sku,
+                "old_qty": old_qty,
+                "actual_qty": actual_qty,
+                "variance": variance,
+                "reference_id": ref_id
+            }

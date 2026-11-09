@@ -6,7 +6,7 @@ services:
       - ACCEPT_EULA=Y
       - MSSQL_SA_PASSWORD=Password123!
     ports:
-      - "1433:1433"
+      - "14333:1433"
     volumes:
       - ./sql/init_databases.sql:/init_databases.sql
     healthcheck:
