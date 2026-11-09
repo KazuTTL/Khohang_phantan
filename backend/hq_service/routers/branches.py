@@ -16,17 +16,18 @@ async def list_branches(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ) -> StandardResponse[list[BranchResponse]]:
-    """Lấy danh sách tất cả các chi nhánh đang hoạt động"""
+    """Lấy danh sách tất cả các chi nhánh trong hệ thống"""
     stmt = select(Branch).order_by(Branch.branch_code.asc())
     res = await db.execute(stmt)
     branches = res.scalars().all()
-    
+
     data = [
         BranchResponse(
             branch_code=b.branch_code,
             branch_name=b.branch_name,
+            api_base_url=b.api_base_url,
             is_active=b.is_active,
-            created_at=b.created_at
+            is_online=b.is_online
         )
         for b in branches
     ]
@@ -43,9 +44,15 @@ async def create_branch(
     code = req.branch_code.strip().upper()
     existing = await db.get(Branch, code)
     if existing:
-        return StandardResponse(success=False, error=f"Mã chi nhánh '{code}' đã tồn tại.")
+        raise HTTPException(status_code=400, detail=f"Mã chi nhánh '{code}' đã tồn tại.")
 
-    branch = Branch(branch_code=code, branch_name=req.branch_name.strip(), is_active=True)
+    branch = Branch(
+        branch_code=code,
+        branch_name=req.branch_name.strip(),
+        api_base_url=req.api_base_url.strip(),
+        is_active=True,
+        is_online=True
+    )
     db.add(branch)
     await db.commit()
     await db.refresh(branch)
@@ -55,7 +62,8 @@ async def create_branch(
         data=BranchResponse(
             branch_code=branch.branch_code,
             branch_name=branch.branch_name,
+            api_base_url=branch.api_base_url,
             is_active=branch.is_active,
-            created_at=branch.created_at
+            is_online=branch.is_online
         )
     )

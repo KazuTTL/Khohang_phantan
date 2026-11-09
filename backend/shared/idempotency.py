@@ -1,39 +1,52 @@
 # backend/shared/idempotency.py
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def check_and_mark_inbox(session: AsyncSession, message_id: str, consumer_name: str) -> bool:
+@asynccontextmanager
+async def safe_transaction(db: AsyncSession):
     """
-    Kiểm tra và ghi nhận Inbox Message trong cùng 1 Database Transaction cục bộ.
-    Đảm bảo nguyên tắc Idempotent Consumer (Ngữ nghĩa xử lý Exactly-once):
-    - Trả về True: Message chưa từng được xử lý -> Cho phép xử lý và ghi nhận vào Inbox.
-    - Trả về False: Message đã được xử lý trước đó -> Bỏ qua (Duplicate / Replay).
+    Quản lý transaction an toàn cho SQLAlchemy 2.0 AsyncSession.
+    Nếu session đã có transaction đang mở (do lệnh SELECT autobegin), sử dụng begin_nested (SAVEPOINT).
+    Nếu chưa có, mở transaction mới (db.begin()).
+    """
+    if db.in_transaction():
+        async with db.begin_nested():
+            yield
+    else:
+        async with db.begin():
+            yield
+
+
+async def check_inbox(db: AsyncSession, message_id: str) -> bool:
+    """
+    Kiểm tra xem message_id đã từng được xử lý trong Inbox_Events chưa.
+    Trả về True nếu ĐÃ TỒN TẠI (cần bỏ qua), False nếu chưa từng xử lý.
     """
     if not message_id:
-        return True
-
-    # 1. Kiểm tra tồn tại trong Inbox_Messages
-    check_query = text(
-        "SELECT 1 FROM Inbox_Messages WHERE message_id = :msg_id AND consumer_name = :c_name"
-    )
-    result = await session.execute(check_query, {"msg_id": message_id, "c_name": consumer_name})
-    if result.scalar() is not None:
-        # Đã xử lý rồi -> Bỏ qua để chống duplicate
         return False
 
-    # 2. Ghi nhận vào Inbox_Messages (chưa commit, sẽ commit cùng business transaction)
-    insert_query = text(
-        "INSERT INTO Inbox_Messages (message_id, consumer_name, processed_at) "
-        "VALUES (:msg_id, :c_name, :proc_at)"
+    query = text("SELECT 1 FROM Inbox_Events WHERE message_id = :mid")
+    result = await db.execute(query, {"mid": message_id})
+    return result.scalar() is not None
+
+
+async def mark_inbox(db: AsyncSession, message_id: str, event_type: str = "UNKNOWN") -> None:
+    """
+    Ghi nhận message_id vào Inbox_Events trong cùng 1 local transaction.
+    Đảm bảo nguyên tắc Idempotent Consumer (xử lý Exactly-Once).
+    """
+    if not message_id:
+        return
+
+    query = text(
+        "INSERT INTO Inbox_Events (message_id, event_type, processed_at) "
+        "VALUES (:mid, :etype, :now)"
     )
-    await session.execute(
-        insert_query,
-        {
-            "msg_id": message_id,
-            "c_name": consumer_name,
-            "proc_at": datetime.now(timezone.utc)
-        }
-    )
-    return True
+    await db.execute(query, {
+        "mid": message_id,
+        "etype": event_type,
+        "now": datetime.now(timezone.utc)
+    })

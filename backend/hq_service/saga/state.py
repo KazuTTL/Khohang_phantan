@@ -4,11 +4,23 @@ from enum import Enum
 
 class SagaStatus(str, Enum):
     """
-    Các trạng thái của giao dịch phân tán Điều chuyển hàng hóa (Stock Transfer Saga).
+    Các trạng thái của giao dịch phân tán Điều chuyển hàng hóa 3 cấp (Stock Transfer Saga).
+    HQ_MANAGER -> SOURCE_BRANCH_MANAGER -> DEST_BRANCH_MANAGER
     """
-    INITIATED = "INITIATED"                     # 1. Đã khởi tạo phiếu điều chuyển tại HQ
-    RESERVED_IN_TRANSIT = "RESERVED_IN_TRANSIT" # 2. Kho nguồn đã giữ hàng, đang vận chuyển tới kho đích
-    COMPLETED = "COMPLETED"                     # 3. Kho đích đã nhập kho thành công (Thành công trọn vẹn)
-    COMPENSATING = "COMPENSATING"               # 4. Kho đích từ chối/gặp sự cố -> Đang kích hoạt bù trừ
-    ROLLED_BACK = "ROLLED_BACK"                 # 5. Đã hoàn trả lại số hàng giữ về kho nguồn (Rollback thành công)
-    FAILED = "FAILED"                           # 6. Thất bại ngay từ Phase 1 (không đủ hàng để giữ)
+    DRAFT = "DRAFT"
+    PENDING_HQ_APPROVAL = "PENDING_HQ_APPROVAL"
+    HQ_APPROVED = "HQ_APPROVED"
+    REJECTED_BY_HQ = "REJECTED_BY_HQ"
+    
+    PENDING_SOURCE_APPROVAL = "PENDING_SOURCE_APPROVAL"
+    SOURCE_APPROVED = "SOURCE_APPROVED"
+    REJECTED_BY_SOURCE = "REJECTED_BY_SOURCE"
+    
+    PENDING_DEST_APPROVAL = "PENDING_DEST_APPROVAL"
+    DEST_APPROVED = "DEST_APPROVED"
+    REJECTED_BY_DEST = "REJECTED_BY_DEST"
+    
+    COMPLETED = "COMPLETED"
+    COMPENSATING = "COMPENSATING"
+    ROLLED_BACK = "ROLLED_BACK"
+    FAILED = "FAILED"

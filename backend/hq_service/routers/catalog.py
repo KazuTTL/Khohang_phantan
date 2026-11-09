@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hq_service.database import get_db
 from hq_service.dependencies import CurrentUser, get_current_user
-from hq_service.models import OutboxMessage, Product
+from hq_service.models import OutboxEvent, Product
 from hq_service.schemas import CreateProductRequest, ProductResponse, StandardResponse
-from shared.event_schemas import EventEnvelope, EvtCatalogUpdatedPayload
+from shared.event_schemas import Envelope
 from shared.messaging_topology import ROUTING_EVT_CATALOG_UPDATED
 
 router = APIRouter(prefix="/catalog", tags=["HQ - Master Catalog"])
@@ -22,17 +22,16 @@ async def list_products(
     user: CurrentUser = Depends(get_current_user)
 ) -> StandardResponse[list[ProductResponse]]:
     """Tra cứu danh mục sản phẩm chuẩn toàn hệ thống (Master Data)"""
-    stmt = select(Product).order_by(Product.sku.asc())
+    stmt = select(Product).where(Product.is_deleted == False).order_by(Product.sku.asc())
     res = await db.execute(stmt)
     products = res.scalars().all()
-    
+
     data = [
         ProductResponse(
             sku=p.sku,
             product_name=p.product_name,
             unit=p.unit,
-            base_price=float(p.base_price),
-            is_active=p.is_active,
+            is_deleted=p.is_deleted,
             updated_at=p.updated_at
         )
         for p in products
@@ -48,7 +47,7 @@ async def create_or_update_product(
 ) -> StandardResponse[ProductResponse]:
     """
     Tạo hoặc cập nhật sản phẩm trong Master Catalog.
-    Ghi Outbox Message EVT_CATALOG_UPDATED trong cùng 1 ACID transaction để đồng bộ xuống các chi nhánh.
+    Ghi Outbox Event EVT_CATALOG_UPDATED trong cùng 1 ACID transaction để đồng bộ xuống các chi nhánh.
     """
     sku = req.sku.strip()
     product = await db.get(Product, sku)
@@ -56,39 +55,38 @@ async def create_or_update_product(
     if product:
         product.product_name = req.product_name.strip()
         product.unit = req.unit.strip()
-        product.base_price = req.base_price
+        product.is_deleted = False
         product.updated_at = datetime.now(timezone.utc)
     else:
         product = Product(
             sku=sku,
             product_name=req.product_name.strip(),
             unit=req.unit.strip(),
-            base_price=req.base_price,
-            is_active=True
+            is_deleted=False
         )
         db.add(product)
 
     # NGUYÊN TẮC 3: Ghi Outbox trong cùng transaction để đồng bộ xuống các chi nhánh qua RabbitMQ
-    envelope = EventEnvelope[EvtCatalogUpdatedPayload](
-        message_id=str(uuid.uuid4()),
-        correlation_id=str(uuid.uuid4()),
-        event_type="EVT_CATALOG_UPDATED",
-        source="HQ_SERVICE",
-        payload=EvtCatalogUpdatedPayload(
-            sku=product.sku,
-            product_name=product.product_name,
-            unit=product.unit,
-            base_price=float(product.base_price),
-            is_active=product.is_active
-        )
+    msg_id = str(uuid.uuid4())
+    payload = {
+        "sku": product.sku,
+        "product_name": product.product_name,
+        "unit": product.unit,
+        "action": "UPSERT"
+    }
+    envelope = Envelope(
+        message_id=msg_id,
+        event_type="evt.catalog.updated",
+        timestamp=datetime.now(timezone.utc),
+        data=payload
     )
 
-    outbox = OutboxMessage(
-        message_id=envelope.message_id,
-        event_type="EVT_CATALOG_UPDATED",
+    outbox = OutboxEvent(
+        event_id=msg_id,
         routing_key=ROUTING_EVT_CATALOG_UPDATED,
-        payload=json.dumps(envelope.model_dump(mode="json")),
-        status="PENDING",
+        payload=envelope.model_dump_json(),
+        is_published=False,
+        next_retry_at=datetime.now(timezone.utc),
         created_at=datetime.now(timezone.utc)
     )
     db.add(outbox)
@@ -102,8 +100,7 @@ async def create_or_update_product(
             sku=product.sku,
             product_name=product.product_name,
             unit=product.unit,
-            base_price=float(product.base_price),
-            is_active=product.is_active,
+            is_deleted=product.is_deleted,
             updated_at=product.updated_at
         )
     )

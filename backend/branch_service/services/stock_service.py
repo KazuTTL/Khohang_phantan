@@ -1,416 +1,513 @@
 # backend/branch_service/services/stock_service.py
-import asyncio
-from datetime import datetime, timezone
+import json
 import logging
 import uuid
-from sqlalchemy import select, text
+from datetime import datetime, timezone
+from typing import Any
+from fastapi import HTTPException
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from branch_service.config import branch_settings
-from branch_service.models import LocalInventory, LocalProduct, StockLedger
-from branch_service.services.outbox_service import OutboxService
-from shared.event_schemas import (
-    EvtInventoryUpdatedPayload, EvtReserveFailedPayload,
-    EvtStockReleasedPayload, EvtStockReservedPayload,
-    EvtTransferCompletedPayload
+from branch_service.models import (
+    IncomingTransfer, LocalInventory, OutboxEvent, StockFreezeLog, StockLedger
 )
-from shared.messaging_topology import (
-    ROUTING_EVT_INVENTORY_UPDATED, ROUTING_EVT_RESERVE_FAILED,
-    ROUTING_EVT_STOCK_RELEASED, ROUTING_EVT_STOCK_RESERVED,
-    ROUTING_EVT_TRANSFER_COMPLETED
-)
+from shared.idempotency import check_inbox, mark_inbox, safe_transaction
 
 logger = logging.getLogger("StockService")
-
-# Async lock bảo vệ đa luồng cục bộ khi chạy trên môi trường SQLite local
-_local_branch_lock = asyncio.Lock()
 
 
 class StockService:
     """
-    Dịch vụ quản trị Tồn kho Cục bộ tại Chi nhánh.
+    Dịch vụ quản trị cốt lõi Tồn kho & Giao dịch Phân tán tại Chi nhánh.
     Tuân thủ tuyệt đối:
-    - NGUYÊN TẮC 3: Mọi thao tác ghi = 1 local ACID transaction (Business + Outbox).
-    - NGUYÊN TẮC 5: Trước khi trừ tồn kho PHẢI dùng 'SELECT ... WITH (UPDLOCK, ROWLOCK)'.
+    1. Transactional Outbox: Mọi thao tác cập nhật dữ liệu nghiệp vụ và ghi sự kiện Outbox
+       đều nằm trong duy nhất 1 Local ACID Transaction (async with db.begin()).
+    2. Pessimistic Concurrency Control: Bắt buộc dùng SELECT ... WITH (UPDLOCK, ROWLOCK)
+       trước khi đọc và trừ tồn kho, triệt tiêu race condition và âm kho.
+    3. Idempotent Consumer: Kiểm tra bảng Inbox_Events trước khi xử lý bất kỳ command nào.
+    4. Stock Freeze Check: Ngăn chặn xuất/nhập đối với sản phẩm đang trong phiên kiểm kê.
     """
 
     @staticmethod
-    async def _lock_and_get_inventory(session: AsyncSession, sku: str) -> tuple[int, int] | None:
+    async def _check_freeze(db: AsyncSession, sku: str) -> None:
         """
-        Khóa dòng bi quan (Pessimistic Row Lock) trước khi đọc và cập nhật tồn kho.
-        Dùng 'SELECT ... WITH (UPDLOCK, ROWLOCK)' trên SQL Server để ngăn chặn Race Condition.
+        Kiểm tra SKU có đang bị đóng băng bởi đợt kiểm kê (Stocktake) nào không.
+        Nếu freeze đang hoạt động (released_at IS NULL và sku IS NULL hoặc sku=:sku) -> raise 409 Conflict.
         """
-        # Xác định dialect động: nếu là SQL Server thì dùng WITH (UPDLOCK, ROWLOCK)
-        bind = session.get_bind()
+        stmt = (
+            select(StockFreezeLog)
+            .where(
+                StockFreezeLog.released_at.is_(None),
+                or_(StockFreezeLog.sku == sku, StockFreezeLog.sku.is_(None))
+            )
+            .limit(1)
+        )
+        res = await db.execute(stmt)
+        freeze = res.scalar_one_or_none()
+        if freeze:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Kho đang kiểm kê (Sản phẩm {sku} đang bị đóng băng trong phiên {freeze.session_id})."
+            )
+
+    @staticmethod
+    async def _lock_and_get_inventory(db: AsyncSession, sku: str) -> tuple[int, int, int] | None:
+        """
+        Khóa dòng bi quan: SELECT ... WITH (UPDLOCK, ROWLOCK) FROM Local_Inventory WHERE sku=:sku.
+        UPDLOCK giữ khóa cập nhật ngay từ lúc đọc, ROWLOCK ép mức khóa dòng chính xác.
+        Trả về: (available_qty, reserved_qty, version)
+        """
+        bind = db.get_bind()
         dialect_name = bind.dialect.name if bind else ""
-        
         lock_hint = "WITH (UPDLOCK, ROWLOCK)" if "mssql" in dialect_name else ""
-        query = text(f"SELECT available_qty, reserved_qty FROM Local_Inventory {lock_hint} WHERE sku = :sku")
-        
-        result = await session.execute(query, {"sku": sku})
+        query = text(f"SELECT available_qty, reserved_qty, version FROM Local_Inventory {lock_hint} WHERE sku = :sku")
+        result = await db.execute(query, {"sku": sku})
         row = result.first()
         if row is None:
             return None
-        return (row[0], row[1])
+        return (row[0], row[1], row[2])
 
     @classmethod
-    async def adjust_stock(
+    async def adjust_local_stock(
         cls,
-        session: AsyncSession,
+        db: AsyncSession,
         sku: str,
-        change_type: str, # LOCAL_IN | LOCAL_OUT
+        change_type: str,
         quantity: int,
-        idempotency_key: str | None = None,
-        note: str | None = None
-    ) -> tuple[bool, str, dict]:
+        reason: str | None = None,
+        user_id: str | None = None
+    ) -> dict[str, Any]:
         """
-        Xuất bán tại chỗ (LOCAL_OUT) hoặc Nhập hàng bán lẻ (LOCAL_IN) tại chi nhánh.
-        Thể hiện tính TỰ TRỊ CỤC BỘ (Local Autonomy):
-        Hoạt động hoàn toàn độc lập với HQ trên CSDL riêng.
+        a) Biến động tồn kho cục bộ (LOCAL_IN hoặc LOCAL_OUT).
         """
-        async with _local_branch_lock:
-            # 1. Kiểm tra Idempotency Key để chống lặp giao dịch
-            if idempotency_key:
-                stmt = select(StockLedger).where(StockLedger.idempotency_key == idempotency_key)
-                existing = (await session.execute(stmt)).scalar_one_or_none()
-                if existing:
-                    return (
-                        True,
-                        "IDEMPOTENT_DUPLICATE",
-                        {
-                            "available_qty": existing.available_after,
-                            "reserved_qty": existing.reserved_after,
-                            "reference_id": existing.reference_id or ""
-                        }
-                    )
+        c_type = change_type.strip().upper()
+        if c_type not in ("LOCAL_IN", "LOCAL_OUT"):
+            raise HTTPException(status_code=400, detail="change_type chỉ chấp nhận 'LOCAL_IN' hoặc 'LOCAL_OUT'.")
 
-            # 2. Khóa dòng với UPDLOCK, ROWLOCK
-            inv = await cls._lock_and_get_inventory(session, sku)
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="Số lượng biến động phải lớn hơn 0.")
+
+        async with safe_transaction(db):
+            await cls._check_freeze(db, sku)
+            inv = await cls._lock_and_get_inventory(db, sku)
             if inv is None:
-                return False, f"Sản phẩm {sku} chưa được khởi tạo tồn kho tại chi nhánh này.", {}
+                raise HTTPException(status_code=404, detail=f"Sản phẩm {sku} chưa tồn tại trong kho chi nhánh.")
 
-            current_avail, current_res = inv
-            new_avail = current_avail
-            new_res = current_res
+            current_avail, current_res, current_ver = inv
 
-            if change_type == "LOCAL_OUT":
+            if c_type == "LOCAL_OUT":
                 if current_avail < quantity:
-                    return False, f"Không đủ tồn kho khả dụng ({current_avail} < {quantity}).", {}
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Tồn kho khả dụng không đủ xuất ({current_avail} < {quantity}). Ngăn chặn xuất âm kho."
+                    )
                 new_avail = current_avail - quantity
-            elif change_type == "LOCAL_IN":
-                new_avail = current_avail + quantity
             else:
-                return False, f"Loại biến động {change_type} không hợp lệ.", {}
+                new_avail = current_avail + quantity
 
-            # 3. Cập nhật Local_Inventory
-            update_query = text(
-                "UPDATE Local_Inventory SET available_qty = :avail, reserved_qty = :res, "
-                "updated_at = :now WHERE sku = :sku"
+            new_ver = current_ver + 1
+
+            # Update Local_Inventory
+            update_stmt = text(
+                "UPDATE Local_Inventory SET available_qty = :avail, version = :ver, updated_at = :now WHERE sku = :sku"
             )
-            await session.execute(
-                update_query,
-                {"avail": new_avail, "res": new_res, "now": datetime.now(timezone.utc), "sku": sku}
+            await db.execute(
+                update_stmt,
+                {"avail": new_avail, "ver": new_ver, "now": datetime.now(timezone.utc), "sku": sku}
             )
 
-            # 4. Ghi sổ Stock_Ledger
-            ref_id = f"LOC-{uuid.uuid4().hex[:8].upper()}"
+            # Insert Stock_Ledger
+            ref_id = str(uuid.uuid4())
             ledger = StockLedger(
-                transaction_type=change_type,
-                sku=sku,
-                quantity=quantity,
-                available_after=new_avail,
-                reserved_after=new_res,
                 reference_id=ref_id,
-                idempotency_key=idempotency_key,
-                note=note or f"Local transaction {change_type} at {branch_settings.BRANCH_CODE}",
+                sku=sku,
+                change_type=c_type,
+                quantity=quantity,
                 created_at=datetime.now(timezone.utc)
             )
-            session.add(ledger)
+            db.add(ledger)
+            await db.flush()
 
-            # 5. NGUYÊN TẮC 3: Ghi Outbox Message EVT_INVENTORY_UPDATED trong cùng Transaction
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_INVENTORY_UPDATED",
-                routing_key=ROUTING_EVT_INVENTORY_UPDATED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtInventoryUpdatedPayload(
-                    branch_code=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    available_qty=new_avail,
-                    reserved_qty=new_res,
-                    change_type=change_type,
-                    reference_id=ref_id
-                ),
-                correlation_id=ref_id
+            # Insert Outbox_Events routing 'evt.inventory.updated'
+            event_id = str(uuid.uuid4())
+            payload = {
+                "message_id": event_id,
+                "event_type": "evt.inventory.updated",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "branch_code": branch_settings.BRANCH_CODE,
+                    "sku": sku,
+                    "available_qty": new_avail,
+                    "reserved_qty": current_res
+                }
+            }
+            outbox = OutboxEvent(
+                event_id=event_id,
+                routing_key="evt.inventory.updated",
+                payload=json.dumps(payload),
+                is_published=False,
+                retry_count=0,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
             )
+            db.add(outbox)
 
-            return True, "SUCCESS", {
-                "available_qty": new_avail,
-                "reserved_qty": new_res,
+            return {
+                "new_available": new_avail,
+                "ledger_id": ledger.ledger_id,
+                "message_id": event_id,
                 "reference_id": ref_id
             }
 
     @classmethod
-    async def reserve_stock_for_saga(
+    async def reserve_stock(
         cls,
-        session: AsyncSession,
+        db: AsyncSession,
         transfer_id: str,
-        dest_branch: str,
+        message_id: str,
         sku: str,
-        quantity: int
+        quantity: int,
+        approved_by: str = "SYSTEM"
     ) -> bool:
         """
-        Saga Phase 1 tại Kho Xuất:
-        Dùng UPDLOCK kiểm tra: nếu đủ hàng thì chuyển available -> reserved.
-        Ghi Outbox EVT_STOCK_RESERVED hoặc EVT_RESERVE_FAILED trong cùng transaction.
+        c) Tạm giữ hàng tại kho xuất trong luồng Saga Phase 1 (CMD_RESERVE_STOCK).
         """
-        async with _local_branch_lock:
-            inv = await cls._lock_and_get_inventory(session, sku)
+        async with safe_transaction(db):
+            # Check Inbox (Idempotent)
+            if await check_inbox(db, message_id):
+                logger.info(f"[IDEMPOTENT HIT] reserve_stock message_id={message_id} đã xử lý.")
+                return True
+
+            await cls._check_freeze(db, sku)
+
+            inv = await cls._lock_and_get_inventory(db, sku)
             if inv is None or inv[0] < quantity:
-                # Không đủ hàng khả dụng -> Báo lỗi
                 avail = inv[0] if inv else 0
-                OutboxService.create_outbox_message(
-                    session=session,
-                    event_type="EVT_RESERVE_FAILED",
-                    routing_key=ROUTING_EVT_RESERVE_FAILED,
-                    source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                    payload_model=EvtReserveFailedPayload(
-                        transfer_id=transfer_id,
-                        source_branch=branch_settings.BRANCH_CODE,
-                        sku=sku,
-                        quantity=quantity,
-                        reason=f"Kho {branch_settings.BRANCH_CODE} chỉ còn {avail} sản phẩm (yêu cầu {quantity})"
-                    ),
-                    correlation_id=transfer_id
-                )
-                logger.warning(f"[SAGA RESERVE FAILED] Kho {branch_settings.BRANCH_CODE} không đủ hàng cho đơn {transfer_id}")
+                await mark_inbox(db, message_id, "cmd.transfer.reserve")
+                
+                fail_event_id = str(uuid.uuid4())
+                fail_payload = {
+                    "message_id": fail_event_id,
+                    "event_type": "evt.transfer.reserve_failed",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "data": {
+                        "transfer_id": transfer_id,
+                        "source_branch": branch_settings.BRANCH_CODE,
+                        "sku": sku,
+                        "quantity": quantity,
+                        "reason": f"Kho {branch_settings.BRANCH_CODE} không đủ tồn khả dụng (Còn {avail}, cần {quantity})"
+                    }
+                }
+                db.add(OutboxEvent(
+                    event_id=fail_event_id,
+                    routing_key="evt.transfer.reserve_failed",
+                    payload=json.dumps(fail_payload),
+                    is_published=False,
+                    next_retry_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc)
+                ))
                 return False
 
-            # Đủ hàng -> Available -= qty, Reserved += qty
-            current_avail, current_res = inv
+            # Đủ hàng: available -= q, reserved += q
+            current_avail, current_res, current_ver = inv
             new_avail = current_avail - quantity
             new_res = current_res + quantity
+            new_ver = current_ver + 1
 
-            update_query = text(
+            update_stmt = text(
                 "UPDATE Local_Inventory SET available_qty = :avail, reserved_qty = :res, "
-                "updated_at = :now WHERE sku = :sku"
+                "version = :ver, updated_at = :now WHERE sku = :sku"
             )
-            await session.execute(
-                update_query,
-                {"avail": new_avail, "res": new_res, "now": datetime.now(timezone.utc), "sku": sku}
+            await db.execute(
+                update_stmt,
+                {"avail": new_avail, "res": new_res, "ver": new_ver, "now": datetime.now(timezone.utc), "sku": sku}
             )
 
-            ledger = StockLedger(
-                transaction_type="SAGA_RESERVE",
+            # Insert Stock_Ledger RESERVE
+            db.add(StockLedger(
+                reference_id=f"{transfer_id}:RESERVE",
                 sku=sku,
+                change_type="RESERVE",
                 quantity=quantity,
-                available_after=new_avail,
-                reserved_after=new_res,
-                reference_id=transfer_id,
-                idempotency_key=f"SAGA-RES-{transfer_id}",
-                note=f"Tạm giữ hàng chuyển tới kho {dest_branch}",
                 created_at=datetime.now(timezone.utc)
-            )
-            session.add(ledger)
+            ))
 
-            # Ghi Outbox EVT_STOCK_RESERVED + EVT_INVENTORY_UPDATED
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_STOCK_RESERVED",
-                routing_key=ROUTING_EVT_STOCK_RESERVED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtStockReservedPayload(
-                    transfer_id=transfer_id,
-                    source_branch=branch_settings.BRANCH_CODE,
-                    dest_branch=dest_branch,
-                    sku=sku,
-                    quantity=quantity,
-                    available_qty=new_avail,
-                    reserved_qty=new_res
-                ),
-                correlation_id=transfer_id
-            )
+            await mark_inbox(db, message_id, "cmd.transfer.reserve")
 
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_INVENTORY_UPDATED",
-                routing_key=ROUTING_EVT_INVENTORY_UPDATED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtInventoryUpdatedPayload(
-                    branch_code=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    available_qty=new_avail,
-                    reserved_qty=new_res,
-                    change_type="SAGA_RESERVE",
-                    reference_id=transfer_id
-                ),
-                correlation_id=transfer_id
-            )
-
-            logger.info(f"[SAGA RESERVED OK] Kho {branch_settings.BRANCH_CODE} giữ {quantity} {sku} cho đơn {transfer_id}")
+            # Insert Outbox 'evt.transfer.source_approved'
+            succ_event_id = str(uuid.uuid4())
+            succ_payload = {
+                "message_id": succ_event_id,
+                "event_type": "evt.transfer.source_approved",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "transfer_id": transfer_id,
+                    "source_branch": branch_settings.BRANCH_CODE,
+                    "dest_branch": "",
+                    "sku": sku,
+                    "quantity": quantity,
+                    "approved_by": approved_by
+                }
+            }
+            db.add(OutboxEvent(
+                event_id=succ_event_id,
+                routing_key="evt.transfer.source_approved",
+                payload=json.dumps(succ_payload),
+                is_published=False,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
+            ))
             return True
 
     @classmethod
-    async def release_stock_compensation(
+    async def commit_out(
         cls,
-        session: AsyncSession,
+        db: AsyncSession,
         transfer_id: str,
-        sku: str,
-        quantity: int,
-        reason: str
-    ) -> None:
-        """
-        Giao dịch bù trừ (Compensating Transaction / Rollback) tại Kho Xuất:
-        Hoàn trả hàng giữ: Reserved -= qty, Available += qty.
-        Ghi Outbox EVT_STOCK_RELEASED trong cùng transaction.
-        """
-        async with _local_branch_lock:
-            inv = await cls._lock_and_get_inventory(session, sku)
-            if not inv:
-                return
-
-            current_avail, current_res = inv
-            new_res = max(0, current_res - quantity)
-            new_avail = current_avail + quantity
-
-            update_query = text(
-                "UPDATE Local_Inventory SET available_qty = :avail, reserved_qty = :res, "
-                "updated_at = :now WHERE sku = :sku"
-            )
-            await session.execute(
-                update_query,
-                {"avail": new_avail, "res": new_res, "now": datetime.now(timezone.utc), "sku": sku}
-            )
-
-            ledger = StockLedger(
-                transaction_type="SAGA_RELEASE",
-                sku=sku,
-                quantity=quantity,
-                available_after=new_avail,
-                reserved_after=new_res,
-                reference_id=transfer_id,
-                idempotency_key=f"SAGA-REL-{transfer_id}",
-                note=f"Giao dịch bù trừ (Rollback): {reason}",
-                created_at=datetime.now(timezone.utc)
-            )
-            session.add(ledger)
-
-            # Ghi Outbox EVT_STOCK_RELEASED
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_STOCK_RELEASED",
-                routing_key=ROUTING_EVT_STOCK_RELEASED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtStockReleasedPayload(
-                    transfer_id=transfer_id,
-                    source_branch=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    quantity=quantity
-                ),
-                correlation_id=transfer_id
-            )
-
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_INVENTORY_UPDATED",
-                routing_key=ROUTING_EVT_INVENTORY_UPDATED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtInventoryUpdatedPayload(
-                    branch_code=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    available_qty=new_avail,
-                    reserved_qty=new_res,
-                    change_type="SAGA_RELEASE",
-                    reference_id=transfer_id
-                ),
-                correlation_id=transfer_id
-            )
-
-            logger.info(f"[SAGA COMPENSATION DONE] Kho {branch_settings.BRANCH_CODE} đã hoàn trả {quantity} {sku} cho đơn {transfer_id}")
-
-    @classmethod
-    async def import_incoming_stock(
-        cls,
-        session: AsyncSession,
-        transfer_id: str,
-        source_branch: str,
+        message_id: str,
         sku: str,
         quantity: int
     ) -> None:
         """
-        Nhập kho thành công tại Kho Đích:
-        Available += qty.
-        Ghi Outbox EVT_TRANSFER_COMPLETED + EVT_INVENTORY_UPDATED trong cùng transaction.
+        d) Nhận evt.transfer.completed ở branch NGUỒN: trừ hẳn reserved -= q.
         """
-        async with _local_branch_lock:
-            inv = await cls._lock_and_get_inventory(session, sku)
-            current_avail = inv[0] if inv else 0
-            current_res = inv[1] if inv else 0
+        async with safe_transaction(db):
+            if await check_inbox(db, message_id):
+                return
 
-            new_avail = current_avail + quantity
-
+            inv = await cls._lock_and_get_inventory(db, sku)
             if inv:
-                update_query = text(
-                    "UPDATE Local_Inventory SET available_qty = :avail, "
-                    "updated_at = :now WHERE sku = :sku"
+                avail, res_qty, ver = inv
+                new_res = max(0, res_qty - quantity)
+                new_ver = ver + 1
+                await db.execute(
+                    text("UPDATE Local_Inventory SET reserved_qty = :res, version = :ver WHERE sku = :sku"),
+                    {"res": new_res, "ver": new_ver, "sku": sku}
                 )
-                await session.execute(
-                    update_query,
-                    {"avail": new_avail, "now": datetime.now(timezone.utc), "sku": sku}
+
+                db.add(StockLedger(
+                    reference_id=f"{transfer_id}:COMMIT",
+                    sku=sku,
+                    change_type="COMMIT_OUT",
+                    quantity=quantity,
+                    created_at=datetime.now(timezone.utc)
+                ))
+
+            await mark_inbox(db, message_id, "evt.transfer.completed")
+
+    @classmethod
+    async def release_stock(
+        cls,
+        db: AsyncSession,
+        transfer_id: str,
+        message_id: str,
+        sku: str,
+        quantity: int
+    ) -> None:
+        """
+        e) Bù trừ hoàn trả (Rollback): reserved -= q, available += q.
+        """
+        async with safe_transaction(db):
+            if await check_inbox(db, message_id):
+                return
+
+            inv = await cls._lock_and_get_inventory(db, sku)
+            if inv:
+                avail, res_qty, ver = inv
+                new_res = max(0, res_qty - quantity)
+                new_avail = avail + quantity
+                new_ver = ver + 1
+
+                await db.execute(
+                    text("UPDATE Local_Inventory SET available_qty = :avail, reserved_qty = :res, version = :ver WHERE sku = :sku"),
+                    {"avail": new_avail, "res": new_res, "ver": new_ver, "sku": sku}
+                )
+
+                db.add(StockLedger(
+                    reference_id=f"{transfer_id}:RELEASE",
+                    sku=sku,
+                    change_type="RELEASE_RESERVE",
+                    quantity=quantity,
+                    created_at=datetime.now(timezone.utc)
+                ))
+
+            await mark_inbox(db, message_id, "cmd.transfer.release")
+
+            rel_event_id = str(uuid.uuid4())
+            rel_payload = {
+                "message_id": rel_event_id,
+                "event_type": "evt.transfer.released",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "transfer_id": transfer_id,
+                    "source_branch": branch_settings.BRANCH_CODE,
+                    "sku": sku,
+                    "quantity": quantity
+                }
+            }
+            db.add(OutboxEvent(
+                event_id=rel_event_id,
+                routing_key="evt.transfer.released",
+                payload=json.dumps(rel_payload),
+                is_published=False,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
+            ))
+
+    @classmethod
+    async def import_transfer(
+        cls,
+        db: AsyncSession,
+        transfer_id: str,
+        message_id: str,
+        sku: str,
+        quantity: int,
+        received_qty: int,
+        user_id: str = "SYSTEM"
+    ) -> None:
+        """
+        f) Dùng khi dest-approve: tăng available += received_qty.
+        """
+        async with safe_transaction(db):
+            if message_id and await check_inbox(db, message_id):
+                return
+
+            await cls._check_freeze(db, sku)
+
+            inv = await cls._lock_and_get_inventory(db, sku)
+            if inv:
+                avail, res_qty, ver = inv
+                new_avail = avail + received_qty
+                new_ver = ver + 1
+                await db.execute(
+                    text("UPDATE Local_Inventory SET available_qty = :avail, version = :ver, updated_at = :now WHERE sku = :sku"),
+                    {"avail": new_avail, "ver": new_ver, "now": datetime.now(timezone.utc), "sku": sku}
                 )
             else:
-                insert_query = text(
-                    "INSERT INTO Local_Inventory (sku, available_qty, reserved_qty, updated_at) "
-                    "VALUES (:sku, :avail, 0, :now)"
-                )
-                await session.execute(
-                    insert_query,
+                new_avail = received_qty
+                await db.execute(
+                    text("INSERT INTO Local_Inventory (sku, available_qty, reserved_qty, version, updated_at) VALUES (:sku, :avail, 0, 1, :now)"),
                     {"sku": sku, "avail": new_avail, "now": datetime.now(timezone.utc)}
                 )
 
-            ledger = StockLedger(
-                transaction_type="SAGA_IN",
+            # Insert Stock_Ledger TRANSFER_IN
+            db.add(StockLedger(
+                reference_id=f"{transfer_id}:IN",
                 sku=sku,
-                quantity=quantity,
-                available_after=new_avail,
-                reserved_after=current_res,
-                reference_id=transfer_id,
-                idempotency_key=f"SAGA-IN-{transfer_id}",
-                note=f"Nhập hàng điều chuyển từ kho {source_branch}",
+                change_type="TRANSFER_IN",
+                quantity=received_qty,
                 created_at=datetime.now(timezone.utc)
-            )
-            session.add(ledger)
+            ))
 
-            # Ghi Outbox EVT_TRANSFER_COMPLETED
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_TRANSFER_COMPLETED",
-                routing_key=ROUTING_EVT_TRANSFER_COMPLETED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtTransferCompletedPayload(
-                    transfer_id=transfer_id,
-                    source_branch=source_branch,
-                    dest_branch=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    quantity=quantity
-                ),
-                correlation_id=transfer_id
-            )
+            # Update Incoming_Transfers status='DEST_APPROVED', received_qty
+            in_transfer = await db.get(IncomingTransfer, transfer_id)
+            source_branch = in_transfer.source_branch if in_transfer else "UNKNOWN"
+            if in_transfer:
+                in_transfer.status = "DEST_APPROVED"
+                in_transfer.received_qty = received_qty
+                in_transfer.updated_at = datetime.now(timezone.utc)
 
-            OutboxService.create_outbox_message(
-                session=session,
-                event_type="EVT_INVENTORY_UPDATED",
-                routing_key=ROUTING_EVT_INVENTORY_UPDATED,
-                source=f"BRANCH_{branch_settings.BRANCH_CODE}",
-                payload_model=EvtInventoryUpdatedPayload(
-                    branch_code=branch_settings.BRANCH_CODE,
-                    sku=sku,
-                    available_qty=new_avail,
-                    reserved_qty=current_res,
-                    change_type="SAGA_IN",
-                    reference_id=transfer_id
-                ),
-                correlation_id=transfer_id
-            )
+            if message_id:
+                await mark_inbox(db, message_id, "cmd.transfer.confirm_receive")
 
-            logger.info(f"[SAGA IMPORT DONE] Kho {branch_settings.BRANCH_CODE} đã nhập {quantity} {sku} từ đơn {transfer_id}")
+            # Outbox evt.transfer.dest_approved
+            event_id = str(uuid.uuid4())
+            payload = {
+                "message_id": event_id,
+                "event_type": "evt.transfer.dest_approved",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "transfer_id": transfer_id,
+                    "source_branch": source_branch,
+                    "dest_branch": branch_settings.BRANCH_CODE,
+                    "sku": sku,
+                    "quantity": quantity,
+                    "received_qty": received_qty,
+                    "approved_by": user_id
+                }
+            }
+            db.add(OutboxEvent(
+                event_id=event_id,
+                routing_key="evt.transfer.dest_approved",
+                payload=json.dumps(payload),
+                is_published=False,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
+            ))
+
+    @classmethod
+    async def reject_source(
+        cls,
+        db: AsyncSession,
+        transfer_id: str,
+        reason: str,
+        user_id: str
+    ) -> None:
+        """
+        g) Chi nhánh nguồn từ chối xuất hàng.
+        """
+        async with safe_transaction(db):
+            in_transfer = await db.get(IncomingTransfer, transfer_id)
+            if in_transfer:
+                in_transfer.status = "SOURCE_REJECTED"
+                in_transfer.reject_reason = reason
+                in_transfer.updated_at = datetime.now(timezone.utc)
+
+            event_id = str(uuid.uuid4())
+            payload = {
+                "message_id": event_id,
+                "event_type": "evt.transfer.source_rejected",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "transfer_id": transfer_id,
+                    "reason": reason,
+                    "rejected_by": user_id
+                }
+            }
+            db.add(OutboxEvent(
+                event_id=event_id,
+                routing_key="evt.transfer.source_rejected",
+                payload=json.dumps(payload),
+                is_published=False,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
+            ))
+
+    @classmethod
+    async def reject_dest(
+        cls,
+        db: AsyncSession,
+        transfer_id: str,
+        reason: str,
+        user_id: str
+    ) -> None:
+        """
+        h) Chi nhánh đích từ chối nhận hàng.
+        """
+        async with safe_transaction(db):
+            in_transfer = await db.get(IncomingTransfer, transfer_id)
+            if in_transfer:
+                in_transfer.status = "DEST_REJECTED"
+                in_transfer.reject_reason = reason
+                in_transfer.updated_at = datetime.now(timezone.utc)
+
+            event_id = str(uuid.uuid4())
+            payload = {
+                "message_id": event_id,
+                "event_type": "evt.transfer.dest_rejected",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "transfer_id": transfer_id,
+                    "reason": reason,
+                    "rejected_by": user_id
+                }
+            }
+            db.add(OutboxEvent(
+                event_id=event_id,
+                routing_key="evt.transfer.dest_rejected",
+                payload=json.dumps(payload),
+                is_published=False,
+                next_retry_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc)
+            ))

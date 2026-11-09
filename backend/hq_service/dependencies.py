@@ -9,10 +9,14 @@ class CurrentUser(BaseModel):
 
 
 async def get_current_user(
-    x_user_id: str | None = Header(default="anonymous_user"),
-    x_role: str | None = Header(default="HQ_ADMIN")
+    x_user_id: str | None = Header(default="hq_manager_01"),
+    x_role: str | None = Header(default="HQ_MANAGER")
 ) -> CurrentUser:
     """
     Xác thực đơn giản thông qua headers X-User-Id và X-Role theo đúng đặc tả đồ án.
+    Roles tại HQ: HQ_STAFF, HQ_MANAGER, HQ_AUDITOR
     """
-    return CurrentUser(user_id=x_user_id or "anonymous_user", role=x_role or "HQ_ADMIN")
+    return CurrentUser(
+        user_id=x_user_id or "hq_manager_01",
+        role=(x_role or "HQ_MANAGER").strip().upper()
+    )

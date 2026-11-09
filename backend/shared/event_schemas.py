@@ -1,32 +1,31 @@
 # backend/shared/event_schemas.py
-from datetime import datetime, timezone
 import uuid
-from typing import Any, Generic, TypeVar
+from datetime import datetime, timezone
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-T = TypeVar("T")
+# ============================================================================
+# EVENT ENVELOPE
+# ============================================================================
 
-
-class EventEnvelope(BaseModel, Generic[T]):
+class Envelope(BaseModel):
     """
-    Standard Message Envelope for all asynchronous RabbitMQ messages.
-    Tuân thủ nguyên tắc Contract-First và At-Least-Once Delivery.
+    Chuẩn Message Envelope cho mọi message gửi qua RabbitMQ Topic Exchange.
+    Bảo đảm tính Contract-First và khả năng tương thích ngược.
     """
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str
-    source: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    payload: T
+    data: dict[str, Any]
 
 
 # ============================================================================
-# COMMAND PAYLOADS (HQ -> Branch)
+# DATA MODELS
 # ============================================================================
 
-class CmdReserveStockPayload(BaseModel):
-    """Lệnh giữ hàng tại kho xuất trong luồng Saga Phase 1"""
+class ApproveRequestData(BaseModel):
+    """Dữ liệu yêu cầu phê duyệt xuất kho gửi tới chi nhánh nguồn"""
     transfer_id: str
     source_branch: str
     dest_branch: str
@@ -34,8 +33,17 @@ class CmdReserveStockPayload(BaseModel):
     quantity: int = Field(gt=0)
 
 
-class CmdReleaseStockPayload(BaseModel):
-    """Lệnh bù trừ (Compensating Transaction) giải phóng hàng giữ khi Saga thất bại"""
+class ConfirmReceiveData(BaseModel):
+    """Dữ liệu yêu cầu tiếp nhận và kiểm đếm gửi tới chi nhánh đích"""
+    transfer_id: str
+    source_branch: str
+    dest_branch: str
+    sku: str
+    quantity: int = Field(gt=0)
+
+
+class ReleaseStockData(BaseModel):
+    """Dữ liệu lệnh bù trừ hoàn trả hàng gửi tới kho nguồn"""
     transfer_id: str
     source_branch: str
     sku: str
@@ -43,88 +51,87 @@ class CmdReleaseStockPayload(BaseModel):
     reason: str = "COMPENSATION_TRIGGERED"
 
 
-class CmdImportTransferPayload(BaseModel):
-    """Lệnh giao hàng tới kho đích để thực hiện nhập kho trong Phase 2"""
-    transfer_id: str
-    source_branch: str
-    dest_branch: str
-    sku: str
-    quantity: int = Field(gt=0)
-
-
-class CmdSyncCatalogPayload(BaseModel):
-    """Lệnh đồng bộ danh mục sản phẩm từ HQ xuống Chi nhánh"""
-    sku: str
-    product_name: str
-    unit: str
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-# ============================================================================
-# EVENT PAYLOADS (Branch -> HQ, Branch -> Cluster)
-# ============================================================================
-
-class EvtStockReservedPayload(BaseModel):
-    """Sự kiện xác nhận đã giữ hàng thành công tại kho xuất"""
+class SourceApprovedData(BaseModel):
+    """Sự kiện xác nhận kho nguồn đã duyệt xuất và giữ hàng thành công"""
     transfer_id: str
     source_branch: str
     dest_branch: str
     sku: str
     quantity: int
-    available_qty: int
-    reserved_qty: int
+    approved_by: str
 
 
-class EvtReserveFailedPayload(BaseModel):
-    """Sự kiện báo lỗi giữ hàng (kho không đủ hàng khả dụng)"""
+class SourceRejectedData(BaseModel):
+    """Sự kiện kho nguồn từ chối xuất kho"""
     transfer_id: str
-    source_branch: str
-    sku: str
-    quantity: int
     reason: str
+    rejected_by: str
 
 
-class EvtTransferCompletedPayload(BaseModel):
-    """Sự kiện xác nhận kho đích đã nhận và nhập hàng thành công (Saga Hoàn tất)"""
+class DestApprovedData(BaseModel):
+    """Sự kiện kho đích đã phê duyệt và nhập kho thành công"""
     transfer_id: str
     source_branch: str
     dest_branch: str
     sku: str
     quantity: int
+    received_qty: int
+    approved_by: str
 
 
-class EvtTransferRejectedPayload(BaseModel):
-    """Sự kiện kho đích từ chối tiếp nhận (Kích hoạt luồng bù trừ Rollback)"""
+class DestRejectedData(BaseModel):
+    """Sự kiện kho đích từ chối nhận hàng (kích hoạt bù trừ)"""
     transfer_id: str
-    source_branch: str
-    dest_branch: str
-    sku: str
-    quantity: int
     reason: str
+    rejected_by: str
 
 
-class EvtStockReleasedPayload(BaseModel):
-    """Sự kiện kho xuất xác nhận đã thực thi xong giao dịch bù trừ (Rollback hoàn tất)"""
+class ReserveFailedData(BaseModel):
+    """Sự kiện báo lỗi giữ hàng (kho nguồn không đủ tồn)"""
     transfer_id: str
+    reason: str
     source_branch: str
     sku: str
     quantity: int
 
 
-class EvtInventoryUpdatedPayload(BaseModel):
-    """Sự kiện cập nhật biến động tồn kho cục bộ lên Snapshot toàn cục tại HQ"""
+class InventoryUpdatedData(BaseModel):
+    """Sự kiện cập nhật biến động tồn kho gửi về HQ để cập nhật Snapshot"""
     branch_code: str
     sku: str
     available_qty: int
     reserved_qty: int
-    change_type: str
-    reference_id: str | None = None
 
 
-class EvtCatalogUpdatedPayload(BaseModel):
-    """Sự kiện danh mục sản phẩm chuẩn tại HQ được cập nhật"""
+class CatalogSyncData(BaseModel):
+    """Sự kiện đồng bộ danh mục sản phẩm từ HQ xuống các chi nhánh"""
     sku: str
     product_name: str
     unit: str
-    base_price: float = 0.0
-    is_active: bool = True
+    action: Literal["UPSERT", "DELETE"] = "UPSERT"
+
+
+class StocktakeItemSchema(BaseModel):
+    sku: str
+    system_qty_at_start: int
+    counted_qty: int
+    variance_qty: int
+    variance_reason: str | None = None
+    adjusted: bool = True
+
+
+class StocktakeApprovedData(BaseModel):
+    """Sự kiện phê duyệt kiểm kê gửi về HQ chốt sổ toàn hệ thống"""
+    session_id: str
+    session_code: str
+    branch_code: str
+    total_skus_counted: int
+    total_variance_abs: int
+    items: list[StocktakeItemSchema] = Field(default_factory=list)
+
+
+# Tương thích ngược (Backward compatibility aliases)
+EventEnvelope = Envelope
+EvtInventoryUpdatedPayload = InventoryUpdatedData
+EvtCatalogUpdatedPayload = CatalogSyncData
+

@@ -1,39 +1,47 @@
 -- ============================================================================
--- init_hq.sql
--- Khởi tạo Schema và dữ liệu mẫu cho Database Trụ sở chính (DB_HQ)
+-- sql/init_hq.sql
+-- Khởi tạo Schema đầy đủ cho Database Trụ sở chính (DB_HQ - Port 1433)
 -- ============================================================================
 
-USE DB_HQ;
+-- 1. HQ Users (3 HQ Roles)
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'HQ_Users')
+BEGIN
+    CREATE TABLE HQ_Users (
+        user_id VARCHAR(50) PRIMARY KEY,
+        full_name NVARCHAR(100) NOT NULL,
+        role VARCHAR(20) NOT NULL CHECK (role IN ('HQ_STAFF','HQ_MANAGER','HQ_AUDITOR')),
+        is_active BIT DEFAULT 1
+    );
+END
 GO
 
--- 1. Bảng Danh mục Chi nhánh
+-- 2. Branches
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Branches')
 BEGIN
     CREATE TABLE Branches (
         branch_code VARCHAR(20) PRIMARY KEY,
         branch_name NVARCHAR(100) NOT NULL,
-        is_active BIT NOT NULL DEFAULT 1,
-        created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+        api_base_url VARCHAR(255) NOT NULL,
+        is_active BIT DEFAULT 1,
+        is_online BIT DEFAULT 1
     );
 END
 GO
 
--- 2. Bảng Danh mục Sản phẩm Chuẩn (Master Catalog)
+-- 3. Master Products
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Products')
 BEGIN
     CREATE TABLE Products (
         sku VARCHAR(50) PRIMARY KEY,
         product_name NVARCHAR(200) NOT NULL,
         unit NVARCHAR(50) NOT NULL,
-        base_price DECIMAL(18, 2) NOT NULL DEFAULT 0,
-        is_active BIT NOT NULL DEFAULT 1,
-        created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        updated_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+        is_deleted BIT DEFAULT 0,
+        updated_at DATETIME2 DEFAULT SYSDATETIME()
     );
 END
 GO
 
--- 3. Bảng Tổng hợp Tồn kho Toàn hệ thống (Snapshot Read-Model)
+-- 4. Global Inventory Snapshot (Read Model)
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Global_Inventory_Snapshot')
 BEGIN
     CREATE TABLE Global_Inventory_Snapshot (
@@ -41,112 +49,143 @@ BEGIN
         sku VARCHAR(50) NOT NULL,
         available_qty INT NOT NULL DEFAULT 0,
         reserved_qty INT NOT NULL DEFAULT 0,
-        last_synced_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        CONSTRAINT PK_Global_Inventory PRIMARY KEY (branch_code, sku),
-        CONSTRAINT FK_Global_Branch FOREIGN KEY (branch_code) REFERENCES Branches(branch_code),
-        CONSTRAINT FK_Global_Product FOREIGN KEY (sku) REFERENCES Products(sku)
+        last_synced_at DATETIME2 DEFAULT SYSDATETIME(),
+        PRIMARY KEY (branch_code, sku)
     );
 END
 GO
 
--- 4. Bảng Điều phối Giao dịch Điều chuyển Kho (Saga State Store)
+-- 5. Transfer Orders (Saga Orchestration State)
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Transfer_Orders')
 BEGIN
     CREATE TABLE Transfer_Orders (
-        transfer_id VARCHAR(50) PRIMARY KEY,
+        transfer_id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        transfer_code VARCHAR(30) NOT NULL UNIQUE,
         source_branch VARCHAR(20) NOT NULL,
         dest_branch VARCHAR(20) NOT NULL,
         sku VARCHAR(50) NOT NULL,
         quantity INT NOT NULL CHECK (quantity > 0),
-        -- Trạng thái Saga: INITIATED | RESERVED_IN_TRANSIT | COMPLETED | COMPENSATING | ROLLED_BACK | FAILED
-        saga_status VARCHAR(30) NOT NULL,
+        -- Status flow:
+        -- DRAFT → PENDING_HQ_APPROVAL → HQ_APPROVED → REJECTED_BY_HQ
+        --   → PENDING_SOURCE_APPROVAL → SOURCE_APPROVED → REJECTED_BY_SOURCE
+        --   → PENDING_DEST_APPROVAL → COMPLETED | REJECTED_BY_DEST
+        --   → COMPENSATING → ROLLED_BACK
+        --   → FAILED (nếu reserve fail)
+        saga_status VARCHAR(40) NOT NULL,
+        created_by VARCHAR(50) NOT NULL,
+        hq_approved_by VARCHAR(50) NULL,
+        source_approved_by VARCHAR(50) NULL,
+        dest_approved_by VARCHAR(50) NULL,
+        hq_approved_at DATETIME2 NULL,
+        source_approved_at DATETIME2 NULL,
+        dest_approved_at DATETIME2 NULL,
+        hq_reject_reason NVARCHAR(500) NULL,
+        source_reject_reason NVARCHAR(500) NULL,
+        dest_reject_reason NVARCHAR(500) NULL,
         error_reason NVARCHAR(500) NULL,
-        created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        updated_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+        created_at DATETIME2 DEFAULT SYSDATETIME(),
+        updated_at DATETIME2 DEFAULT SYSDATETIME()
     );
+    CREATE INDEX IX_Transfer_Status ON Transfer_Orders(saga_status);
 END
 GO
 
--- 5. Bảng Phiên Kiểm kê Toàn hệ thống (Stocktake Sessions)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Stocktake_Sessions')
+-- 6. Saga Steps Log
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Saga_Steps')
 BEGIN
-    CREATE TABLE Stocktake_Sessions (
-        session_id VARCHAR(50) PRIMARY KEY,
-        title NVARCHAR(200) NOT NULL,
-        status VARCHAR(30) NOT NULL DEFAULT 'OPEN', -- OPEN | CLOSED | CANCELLED
-        created_by VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
-        created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        closed_at DATETIME2 NULL
+    CREATE TABLE Saga_Steps (
+        step_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        transfer_id UNIQUEIDENTIFIER NOT NULL,
+        step_name VARCHAR(50) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        message_id UNIQUEIDENTIFIER NULL,
+        payload NVARCHAR(MAX) NULL,
+        created_at DATETIME2 DEFAULT SYSDATETIME()
     );
+    CREATE INDEX IX_SagaSteps_Transfer ON Saga_Steps(transfer_id);
 END
 GO
 
--- 6. Bảng Outbox Messages tại HQ (Transactional Outbox)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Outbox_Messages')
+-- 7. Outbox & Inbox
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Outbox_Events')
 BEGIN
-    CREATE TABLE Outbox_Messages (
-        message_id VARCHAR(50) PRIMARY KEY,
-        event_type VARCHAR(100) NOT NULL,
+    CREATE TABLE Outbox_Events (
+        event_id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
         routing_key VARCHAR(100) NOT NULL,
         payload NVARCHAR(MAX) NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- PENDING | PROCESSED | FAILED
-        retry_count INT NOT NULL DEFAULT 0,
-        created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        processed_at DATETIME2 NULL
+        is_published BIT DEFAULT 0,
+        retry_count INT DEFAULT 0,
+        next_retry_at DATETIME2 DEFAULT SYSDATETIME(),
+        created_at DATETIME2 DEFAULT SYSDATETIME()
     );
-    CREATE INDEX IX_Outbox_Pending ON Outbox_Messages(status, created_at);
+    CREATE INDEX IX_HQ_Outbox_Pending ON Outbox_Events(is_published, next_retry_at) WHERE is_published = 0;
 END
 GO
 
--- 7. Bảng Inbox Messages tại HQ (Idempotent Consumer)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Inbox_Messages')
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Inbox_Events')
 BEGIN
-    CREATE TABLE Inbox_Messages (
-        message_id VARCHAR(50) NOT NULL,
-        consumer_name VARCHAR(100) NOT NULL,
-        processed_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-        CONSTRAINT PK_HQ_Inbox PRIMARY KEY (message_id, consumer_name)
+    CREATE TABLE Inbox_Events (
+        message_id UNIQUEIDENTIFIER PRIMARY KEY,
+        event_type VARCHAR(50) NOT NULL,
+        processed_at DATETIME2 DEFAULT SYSDATETIME()
     );
 END
 GO
 
--- Nạp dữ liệu mẫu ban đầu
-MERGE Branches AS target
-USING (VALUES 
-    ('HN', N'Kho Chi nhánh Hà Nội', 1),
-    ('HCM', N'Kho Chi nhánh TP.HCM', 1)
-) AS source (branch_code, branch_name, is_active)
-ON (target.branch_code = source.branch_code)
-WHEN NOT MATCHED THEN
-    INSERT (branch_code, branch_name, is_active)
-    VALUES (source.branch_code, source.branch_name, source.is_active);
+-- 8. Global Stocktakes
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Stocktake_Sessions_Global')
+BEGIN
+    CREATE TABLE Stocktake_Sessions_Global (
+        session_id UNIQUEIDENTIFIER PRIMARY KEY,
+        session_code VARCHAR(30) NOT NULL,
+        branch_code VARCHAR(20) NOT NULL,
+        status VARCHAR(30) NOT NULL,
+        scope_type VARCHAR(20) NOT NULL,
+        total_skus_counted INT NOT NULL DEFAULT 0,
+        total_variance_abs INT NOT NULL DEFAULT 0,
+        created_by_name NVARCHAR(100) NULL,
+        approved_by_name NVARCHAR(100) NULL,
+        finalized_by_name NVARCHAR(100) NULL,
+        created_at DATETIME2 NOT NULL,
+        approved_at DATETIME2 NULL,
+        finalized_at DATETIME2 NULL,
+        last_synced_at DATETIME2 DEFAULT SYSDATETIME()
+    );
+END
+GO
 
-MERGE Products AS target
-USING (VALUES 
-    ('BAN-PHIM-CO', N'Bàn phím cơ không dây Bluetooth Pro', N'Chiếc', 1250000, 1),
-    ('CHUOT-LOGI-MX3', N'Chuột công thái học cao cấp Silent', N'Chiếc', 890000, 1),
-    ('TAI-NGHE-SONY', N'Tai nghe chụp tai chống ồn ANC', N'Chiếc', 2450000, 1),
-    ('MAN-HINH-4K', N'Màn hình đồ họa 27 inch 4K HDR', N'Chiếc', 6800000, 1)
-) AS source (sku, product_name, unit, base_price, is_active)
-ON (target.sku = source.sku)
-WHEN NOT MATCHED THEN
-    INSERT (sku, product_name, unit, base_price, is_active)
-    VALUES (source.sku, source.product_name, source.unit, source.base_price, source.is_active);
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Stocktake_Items_Global')
+BEGIN
+    CREATE TABLE Stocktake_Items_Global (
+        item_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        session_id UNIQUEIDENTIFIER NOT NULL,
+        sku VARCHAR(50) NOT NULL,
+        system_qty_at_start INT NOT NULL,
+        counted_qty INT NOT NULL,
+        variance_qty INT NOT NULL,
+        variance_reason NVARCHAR(500) NULL
+    );
+END
+GO
 
--- Snapshot ban đầu
-MERGE Global_Inventory_Snapshot AS target
-USING (VALUES
-    ('HN', 'BAN-PHIM-CO', 120, 0),
-    ('HN', 'CHUOT-LOGI-MX3', 85, 0),
-    ('HN', 'TAI-NGHE-SONY', 45, 0),
-    ('HN', 'MAN-HINH-4K', 30, 0),
-    ('HCM', 'BAN-PHIM-CO', 60, 0),
-    ('HCM', 'CHUOT-LOGI-MX3', 40, 0),
-    ('HCM', 'TAI-NGHE-SONY', 15, 0),
-    ('HCM', 'MAN-HINH-4K', 20, 0)
-) AS source (branch_code, sku, available_qty, reserved_qty)
-ON (target.branch_code = source.branch_code AND target.sku = source.sku)
-WHEN NOT MATCHED THEN
-    INSERT (branch_code, sku, available_qty, reserved_qty)
-    VALUES (source.branch_code, source.sku, source.available_qty, source.reserved_qty);
+-- Seed Data
+IF NOT EXISTS (SELECT 1 FROM Branches WHERE branch_code = 'HN')
+BEGIN
+    INSERT INTO Branches (branch_code, branch_name, api_base_url, is_active, is_online)
+    VALUES ('HN', N'Chi nhánh Hà Nội', 'http://branch_hn:8001', 1, 1);
+END
+
+IF NOT EXISTS (SELECT 1 FROM Branches WHERE branch_code = 'HCM')
+BEGIN
+    INSERT INTO Branches (branch_code, branch_name, api_base_url, is_active, is_online)
+    VALUES ('HCM', N'Chi nhánh TP.HCM', 'http://branch_hcm:8002', 1, 1);
+END
+
+IF NOT EXISTS (SELECT 1 FROM HQ_Users WHERE user_id = 'hq_staff_01')
+BEGIN
+    INSERT INTO HQ_Users (user_id, full_name, role, is_active) VALUES
+    ('hq_staff_01', N'Nguyễn Văn Nhân', 'HQ_STAFF', 1),
+    ('hq_manager_01', N'Trần Thị Duyệt', 'HQ_MANAGER', 1),
+    ('hq_auditor_01', N'Lê Văn Kiểm', 'HQ_AUDITOR', 1);
+END
 GO

@@ -3,12 +3,13 @@ import logging
 import sys
 
 
-def setup_logger(service_name: str, level: str = "INFO") -> logging.Logger:
+def setup_logging(service_name: str, branch_code: str | None = None) -> logging.Logger:
     """
-    Khởi tạo và cấu hình Logger chuẩn hóa cho toàn bộ các node dịch vụ phân tán.
+    Cấu hình Structured Logging chuẩn cho các node dịch vụ phân tán.
     """
-    logger = logging.getLogger(service_name)
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    name = f"{service_name}_{branch_code}" if branch_code else service_name
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
 
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
@@ -19,6 +20,5 @@ def setup_logger(service_name: str, level: str = "INFO") -> logging.Logger:
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
-    # Disable propagating to root if handled
     logger.propagate = False
     return logger

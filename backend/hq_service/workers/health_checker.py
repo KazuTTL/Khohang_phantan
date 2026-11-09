@@ -1,5 +1,6 @@
 # backend/hq_service/workers/health_checker.py
 import logging
+from typing import Any
 from sqlalchemy import text
 from hq_service.database import AsyncSessionLocal
 from shared.rabbitmq_client import RabbitMQClient

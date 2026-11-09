@@ -1,90 +1,85 @@
 # backend/hq_service/workers/outbox_worker.py
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from hq_service.database import AsyncSessionLocal
-from hq_service.models import OutboxMessage
-from shared.config import shared_config
+from hq_service.models import OutboxEvent
 from shared.rabbitmq_client import RabbitMQClient
 
 logger = logging.getLogger("HQOutboxWorker")
 
 
-class HQOutboxWorker:
+async def outbox_loop(session_factory: async_sessionmaker, rabbitmq_client: RabbitMQClient) -> None:
     """
-    Background worker định kỳ quét bảng Outbox_Messages tại DB_HQ và publish lên RabbitMQ.
-    Đảm bảo tính nhất quán cuối cùng (Eventual Consistency) và nguyên tắc Transactional Outbox.
+    Vòng lặp định kỳ quét bảng Outbox_Events tại DB_HQ và publish lên RabbitMQ.
+    Áp dụng Pessimistic Locking với UPDLOCK, READPAST để hỗ trợ mở rộng an toàn.
     """
+    batch_size = 20
+    poll_interval = 0.5
 
-    def __init__(self, rabbitmq_client: RabbitMQClient):
-        self.rmq = rabbitmq_client
-        self._running = False
-        self._task: asyncio.Task | None = None
+    while True:
+        try:
+            if not rabbitmq_client.is_connected:
+                await asyncio.sleep(1.0)
+                continue
 
-    async def start(self) -> None:
-        self._running = True
-        self._task = asyncio.create_task(self._run_loop())
-        logger.info("[OUTBOX WORKER] Đã khởi động tiến trình quét Outbox tại HQ...")
+            async with session_factory() as session:
+                async with session.begin():
+                    bind = session.get_bind()
+                    dialect_name = bind.dialect.name if bind else ""
+                    lock_hint = "WITH (UPDLOCK, READPAST)" if "mssql" in dialect_name else ""
 
-    async def stop(self) -> None:
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        logger.info("[OUTBOX WORKER] Đã dừng tiến trình quét Outbox tại HQ.")
+                    query = text(f"""
+                        SELECT TOP ({batch_size}) event_id, routing_key, payload, retry_count
+                        FROM Outbox_Events {lock_hint}
+                        WHERE is_published = 0 AND next_retry_at <= :now
+                        ORDER BY next_retry_at ASC
+                    """)
 
-    async def _run_loop(self) -> None:
-        while self._running:
-            try:
-                await self.process_pending_messages()
-            except Exception as e:
-                logger.error(f"[OUTBOX ERROR] Lỗi trong vòng lặp Outbox Worker: {e}", exc_info=True)
-            await asyncio.sleep(shared_config.OUTBOX_POLL_INTERVAL_SECONDS)
+                    result = await session.execute(query, {"now": datetime.now(timezone.utc)})
+                    rows = result.fetchall()
 
-    async def process_pending_messages(self) -> None:
-        if not self.rmq.is_connected:
-            return
+                    for row in rows:
+                        event_id, routing_key, payload_str, retry_count = row
+                        try:
+                            payload_data = json.loads(payload_str)
+                            published = await rabbitmq_client.publish(
+                                routing_key=routing_key,
+                                message=payload_data,
+                                correlation_id=event_id
+                            )
+                            if published:
+                                await session.execute(
+                                    text("UPDATE Outbox_Events SET is_published = 1 WHERE event_id = :eid"),
+                                    {"eid": event_id}
+                                )
+                                logger.debug(f"[HQ OUTBOX PUBLISHED] event_id={event_id} -> {routing_key}")
+                            else:
+                                raise RuntimeError("Publisher confirm negative ack")
+                        except Exception as pub_err:
+                            new_retry = retry_count + 1
+                            backoff_seconds = min(2 ** new_retry, 60)
+                            next_retry = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+                            logger.warning(
+                                f"[HQ OUTBOX RETRY] event_id={event_id} lần {new_retry} thất bại: {pub_err}. "
+                                f"Thử lại sau {backoff_seconds}s"
+                            )
+                            await session.execute(
+                                text("""
+                                    UPDATE Outbox_Events
+                                    SET retry_count = :rc, next_retry_at = :nxt
+                                    WHERE event_id = :eid
+                                """),
+                                {"rc": new_retry, "nxt": next_retry, "eid": event_id}
+                            )
 
-        async with AsyncSessionLocal() as session:
-            stmt = (
-                select(OutboxMessage)
-                .where(OutboxMessage.status == "PENDING")
-                .order_by(OutboxMessage.created_at.asc())
-                .limit(20)
-            )
-            res = await session.execute(stmt)
-            messages = res.scalars().all()
+        except asyncio.CancelledError:
+            logger.info("[HQ OUTBOX] Worker đã dừng theo tín hiệu shutdown.")
+            break
+        except Exception as e:
+            logger.error(f"[HQ OUTBOX LOOP ERROR] {e}", exc_info=True)
 
-            if not messages:
-                return
-
-            for msg in messages:
-                try:
-                    payload_dict = json.loads(msg.payload)
-                    published = await self.rmq.publish(
-                        routing_key=msg.routing_key,
-                        message=payload_dict,
-                        correlation_id=msg.message_id
-                    )
-                    if published:
-                        msg.status = "PROCESSED"
-                        msg.processed_at = datetime.now(timezone.utc)
-                    else:
-                        msg.retry_count += 1
-                        if msg.retry_count >= shared_config.MAX_OUTBOX_RETRIES:
-                            msg.status = "FAILED"
-                            logger.error(f"[OUTBOX FAILED] Msg {msg.message_id} vượt quá số lần retry.")
-                except Exception as ex:
-                    msg.retry_count += 1
-                    logger.error(f"[OUTBOX PUBLISH ERR] Msg {msg.message_id}: {ex}")
-                    if msg.retry_count >= shared_config.MAX_OUTBOX_RETRIES:
-                        msg.status = "FAILED"
-
-            await session.commit()
+        await asyncio.sleep(poll_interval)
