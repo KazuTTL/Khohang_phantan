@@ -28,6 +28,9 @@ class AdjustStockResponse(BaseModel):
     new_available: int
     ledger_id: int
     message_id: str
+    available_qty: int | None = None
+    reference_id: str | None = None
+    message: str | None = None
 
 
 class LocalInventoryItem(BaseModel):

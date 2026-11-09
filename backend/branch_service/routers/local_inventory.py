@@ -141,7 +141,10 @@ async def adjust_local_stock(
         data=AdjustStockResponse(
             new_available=result["new_available"],
             ledger_id=result["ledger_id"],
-            message_id=result["message_id"]
+            message_id=result["message_id"],
+            available_qty=result["new_available"],
+            reference_id=result.get("reference_id") or str(result["ledger_id"]),
+            message="Thao tác biến động tồn kho thành công."
         ),
         error=None
     )

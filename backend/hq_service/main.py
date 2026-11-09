@@ -156,11 +156,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Health check endpoint
+@app.get("/health", tags=["HQ - Health"])
 @app.get("/api/v1/health", tags=["HQ - Health"])
 async def health_check():
     """Kiểm tra trạng thái kết nối CSDL và Message Broker của Node HQ"""
     status = await HQHealthChecker.check_health(rabbitmq_client)
-    return {"success": True, "data": status, "error": None}
+    return {"status": status.get("status", "UP"), "success": True, "data": status, "error": None}
 
 
 # Đăng ký các Router nghiệp vụ
@@ -169,3 +170,6 @@ app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(global_inventory.router, prefix="/api/v1")
 app.include_router(transfers.router, prefix="/api/v1")
 app.include_router(stocktakes.router, prefix="/api/v1")
+
+# Route alias hỗ trợ frontend và direct query
+app.add_api_route("/api/v1/inventory/global", global_inventory.get_global_inventory, methods=["GET"], tags=["HQ - Global Inventory Snapshot"])

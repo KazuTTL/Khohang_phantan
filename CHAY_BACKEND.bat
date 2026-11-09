@@ -12,7 +12,7 @@ cd /d D:\QLKDCN\backend
 
 :: 1. Khởi động Node Trụ sở chính (HQ - 8000)
 echo [1/3] Đang bật Node HQ (Port 8000)...
-start "Node HQ - Port 8000 (Saga Coordinator)" cmd /k "title Node HQ (8000) && python -m uvicorn hq_service.main:app --host 0.0.0.0 --port 8000 --reload"
+start "Node HQ - Port 8000 (Saga Coordinator)" cmd /k "title Node HQ (8000) && set PYTHONPATH=D:\QLKDCN\backend&& python -m uvicorn hq_service.main:app --host 0.0.0.0 --port 8000 --reload"
 
 timeout /t 1 >nul
 

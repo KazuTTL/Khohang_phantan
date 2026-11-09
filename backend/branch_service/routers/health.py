@@ -12,6 +12,7 @@ router = APIRouter(tags=["Branch - Health Check"])
 
 def get_health_router(rabbitmq_client: RabbitMQClient) -> APIRouter:
     @router.get("/health")
+    @router.get("/api/v1/health")
     async def health_check():
         """
         Kiểm tra sức khỏe phân tán:

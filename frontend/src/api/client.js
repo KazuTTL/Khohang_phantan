@@ -14,9 +14,13 @@ export async function fetchJson(url, options = {}) {
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.detail || `HTTP Error ${res.status}`);
+      throw new Error(errData.detail || errData.error || `HTTP Error ${res.status}`);
     }
-    return await res.json();
+    const json = await res.json();
+    if (json && typeof json === 'object' && json.success !== undefined && 'data' in json) {
+      return json.data;
+    }
+    return json;
   } catch (err) {
     console.error(`API Error on ${url}:`, err);
     throw err;

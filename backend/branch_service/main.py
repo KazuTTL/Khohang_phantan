@@ -209,3 +209,6 @@ app.include_router(stocktakes.router, prefix="/api/v1")
 app.include_router(suppliers.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(health.get_health_router(rabbitmq_client))
+
+# Alias hỗ trợ frontend: /api/v1/ledger
+app.add_api_route("/api/v1/ledger", local_inventory.get_stock_ledger, methods=["GET"], tags=["Branch - Local Inventory (Local Autonomy)"])

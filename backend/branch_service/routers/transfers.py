@@ -53,6 +53,15 @@ async def list_transfers(
     return StandardResponse(success=True, data=data, error=None)
 
 
+@router.get("/incoming", response_model=StandardResponse[list[TransferItemResponse]])
+async def list_incoming_transfers(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db)
+):
+    """Danh sách các đơn điều chuyển đến chi nhánh (INBOUND)"""
+    return await list_transfers(transfer_type="INBOUND", status=None, limit=limit, db=db)
+
+
 @router.get("/{transfer_id}", response_model=StandardResponse[TransferItemResponse])
 async def get_transfer_detail(
     transfer_id: str,
@@ -128,6 +137,7 @@ async def source_reject_transfer(
 
 
 @router.post("/{transfer_id}/dest-approve", response_model=StandardResponse[dict])
+@router.post("/{transfer_id}/confirm", response_model=StandardResponse[dict])
 async def dest_approve_transfer(
     transfer_id: str,
     body: DestApproveBody | None = None,
@@ -158,6 +168,7 @@ async def dest_approve_transfer(
 
 
 @router.post("/{transfer_id}/dest-reject", response_model=StandardResponse[dict])
+@router.post("/{transfer_id}/reject", response_model=StandardResponse[dict])
 async def dest_reject_transfer(
     transfer_id: str,
     body: RejectTransferRequest,
