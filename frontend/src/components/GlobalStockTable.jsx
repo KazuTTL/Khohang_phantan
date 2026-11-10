@@ -23,6 +23,8 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
   const [editPrice, setEditPrice] = useState(0);
   const [editMinTh, setEditMinTh] = useState(10);
   const [editMaxTh, setEditMaxTh] = useState(200);
+  const [editStockHN, setEditStockHN] = useState(0);
+  const [editStockHCM, setEditStockHCM] = useState(0);
 
   // Search & Filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -74,6 +76,8 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
     setEditPrice(p.price || 0);
     setEditMinTh(10);
     setEditMaxTh(200);
+    setEditStockHN(p.branches?.HN?.available ?? 0);
+    setEditStockHCM(p.branches?.HCM?.available ?? 0);
     setMsg(null);
   };
 
@@ -88,11 +92,15 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
         unit: editUnit.trim(),
         price: parseFloat(editPrice) || 0,
         min_threshold: parseInt(editMinTh, 10) || 10,
-        max_threshold: parseInt(editMaxTh, 10) || 200
+        max_threshold: parseInt(editMaxTh, 10) || 200,
+        branch_stock: {
+          HN: parseInt(editStockHN, 10) || 0,
+          HCM: parseInt(editStockHCM, 10) || 0
+        }
       });
       setMsg({
         type: 'success',
-        text: `Đã cập nhật sản phẩm '${editingProduct.sku}' và đồng bộ thành công tới các chi nhánh!`
+        text: `Đã cập nhật sản phẩm '${editingProduct.sku}' và điều chỉnh tồn kho chi nhánh thành công!`
       });
       if (onRefresh) onRefresh();
       setTimeout(() => {
@@ -369,69 +377,118 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
             </button>
           </div>
 
-          <form onSubmit={handleUpdateProduct} className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-            <div>
-              <label className="block text-slate-400 mb-1">Mã SKU (Cố định)</label>
-              <input
-                type="text"
-                value={editingProduct.sku}
-                disabled
-                className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-400 font-mono cursor-not-allowed"
-              />
+          <form onSubmit={handleUpdateProduct} className="space-y-3 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-slate-400 mb-1">Mã SKU (Cố định)</label>
+                <input
+                  type="text"
+                  value={editingProduct.sku}
+                  disabled
+                  className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-400 font-mono cursor-not-allowed"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Tên Hàng Hóa (*)</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Đơn vị tính</label>
+                <input
+                  type="text"
+                  value={editUnit}
+                  onChange={e => setEditUnit(e.target.value)}
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Đơn giá (VNĐ)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="10000"
+                  value={editPrice}
+                  onChange={e => setEditPrice(e.target.value)}
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Định mức Min</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={editMinTh}
+                  onChange={e => setEditMinTh(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Định mức Max</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={editMaxTh}
+                  onChange={e => setEditMaxTh(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-slate-400 mb-1">Tên Hàng Hóa (*)</label>
-              <input
-                type="text"
-                value={editName}
-                onChange={e => setEditName(e.target.value)}
-                required
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-              />
+
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-2 border-t border-slate-800">
+              Điều chỉnh Tồn Kho Khả Dụng theo Chi Nhánh
             </div>
-            <div>
-              <label className="block text-slate-400 mb-1">Đơn vị tính</label>
-              <input
-                type="text"
-                value={editUnit}
-                onChange={e => setEditUnit(e.target.value)}
-                required
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-slate-800/60 rounded-lg border border-slate-700">
+              <div>
+                <label className="block text-indigo-300 font-semibold mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <i className="fa-solid fa-warehouse text-indigo-400"></i>
+                    Tồn kho Kho Hà Nội (HN)
+                  </span>
+                  {editingProduct.branches?.HN?.reserved > 0 && (
+                    <span className="text-[10px] text-amber-400 font-normal">
+                      (Tạm khóa: {editingProduct.branches.HN.reserved})
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={editStockHN}
+                  onChange={e => setEditStockHN(e.target.value)}
+                  className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-2.5 py-1.5 text-indigo-200 font-bold focus:outline-none focus:border-indigo-400"
+                />
+              </div>
+              <div>
+                <label className="block text-violet-300 font-semibold mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <i className="fa-solid fa-warehouse text-violet-400"></i>
+                    Tồn kho Kho TP.HCM (HCM)
+                  </span>
+                  {editingProduct.branches?.HCM?.reserved > 0 && (
+                    <span className="text-[10px] text-amber-400 font-normal">
+                      (Tạm khóa: {editingProduct.branches.HCM.reserved})
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={editStockHCM}
+                  onChange={e => setEditStockHCM(e.target.value)}
+                  className="w-full bg-slate-900 border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-violet-200 font-bold focus:outline-none focus:border-violet-400"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-slate-400 mb-1">Đơn giá (VNĐ)</label>
-              <input
-                type="number"
-                min="0"
-                step="10000"
-                value={editPrice}
-                onChange={e => setEditPrice(e.target.value)}
-                required
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">Định mức Min</label>
-              <input
-                type="number"
-                min="0"
-                value={editMinTh}
-                onChange={e => setEditMinTh(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">Định mức Max</label>
-              <input
-                type="number"
-                min="1"
-                value={editMaxTh}
-                onChange={e => setEditMaxTh(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-            <div className="md:col-span-2 flex items-end justify-end gap-2">
+
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setEditingProduct(null)}

@@ -67,9 +67,6 @@ export default function LoginPage() {
           <div>
             <h1 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
               DISTRIBUTED WMS
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                JWT + RBAC
-              </span>
             </h1>
             <p className="text-xs text-slate-400">
               Hệ thống Quản lý Kho hàng Phân tán Đa Chi nhánh
@@ -138,10 +135,6 @@ export default function LoginPage() {
 
         {/* Quick Demo Login Badges */}
         <div className="mt-6 pt-5 border-t border-slate-800/80">
-          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
-            <i className="fa-solid fa-id-card-clip text-indigo-400"></i>
-            Tài khoản mẫu báo cáo đồ án (Click để vào nhanh):
-          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
             <button
               type="button"

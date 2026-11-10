@@ -63,6 +63,7 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     min_threshold: Optional[int] = None
     max_threshold: Optional[int] = None
+    branch_stock: Optional[Dict[str, int]] = Field(default=None, description="Số lượng tồn kho cập nhật cho từng chi nhánh, ví dụ: {'HN': 45, 'HCM': 25}")
 
 # HQ: Tạo lệnh điều chuyển kho Saga
 class TransferOrderCreate(BaseModel):

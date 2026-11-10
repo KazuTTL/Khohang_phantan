@@ -72,9 +72,6 @@ export default function HQDashboardPage() {
             <div>
               <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-2">
                 TRỤ SỞ CHÍNH (HQ COORDINATOR)
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  Saga Coordinator + Master Catalog
-                </span>
               </h1>
               <p className="text-xs text-slate-400">
                 Điều phối đơn hàng phân tán, chính sách giá và phân bổ tồn kho liên chi nhánh

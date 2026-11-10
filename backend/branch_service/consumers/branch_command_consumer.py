@@ -9,6 +9,7 @@ Lắng nghe các lệnh điều phối từ Saga Coordinator (HQ) hoặc sự ki
 """
 import os
 import logging
+import time
 from typing import Dict, Any
 from ..models import IncomingTransfer, LocalProduct, LocalInventory, StockLedger
 from ..database import SessionLocal
@@ -148,20 +149,79 @@ async def start_branch_consumer():
                 db.commit()
                 logger.info(f"[{BRANCH_CODE}] Đã tự động đồng bộ mặt hàng mới '{sku}' từ Master Catalog (Tồn ban đầu: {init_qty}).")
 
-            # 6. Đồng bộ cập nhật thông tin sản phẩm từ Master Data Catalog
+            # 6. Đồng bộ cập nhật thông tin sản phẩm từ Master Data Catalog (bao gồm số lượng tồn kho nếu có)
             elif event_type == "EVT_PRODUCT_UPDATED":
                 p = db.query(LocalProduct).filter(LocalProduct.sku == sku).first()
                 if p:
                     p.product_name = data.get("product_name", p.product_name)
                     p.unit = data.get("unit", p.unit)
+                else:
+                    p = LocalProduct(
+                        sku=sku,
+                        product_name=data.get("product_name", sku),
+                        unit=data.get("unit", "Chiếc")
+                    )
+                    db.add(p)
+
                 inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
-                if inv:
-                    if data.get("min_threshold") is not None:
-                        inv.min_threshold = int(data.get("min_threshold"))
-                    if data.get("max_threshold") is not None:
-                        inv.max_threshold = int(data.get("max_threshold"))
+                min_th = int(data.get("min_threshold", 10)) if data.get("min_threshold") is not None else 10
+                max_th = int(data.get("max_threshold", 200)) if data.get("max_threshold") is not None else 200
+
+                branch_stock = data.get("branch_stock")
+                if branch_stock and isinstance(branch_stock, dict) and BRANCH_CODE in branch_stock:
+                    new_qty = max(0, int(branch_stock[BRANCH_CODE]))
+                    if inv:
+                        old_qty = inv.available_qty
+                        diff = new_qty - old_qty
+                        inv.available_qty = new_qty
+                        if data.get("min_threshold") is not None:
+                            inv.min_threshold = int(data.get("min_threshold"))
+                        if data.get("max_threshold") is not None:
+                            inv.max_threshold = int(data.get("max_threshold"))
+                        inv.version += 1
+
+                        if diff != 0:
+                            ledger = StockLedger(
+                                reference_id=f"UPDATE-{sku}-{BRANCH_CODE}-{int(time.time() * 1000)}",
+                                sku=sku,
+                                change_type="HQ_UPDATE",
+                                quantity=abs(diff),
+                                partner_name="Trụ sở chính HQ",
+                                note=f"Điều chỉnh số lượng từ Trụ sở HQ: {old_qty} -> {new_qty}"
+                            )
+                            db.add(ledger)
+                        # Đồng bộ outbox về HQ
+                        stock_service._queue_inventory_sync(db, sku, inv.available_qty, inv.reserved_qty)
+                    else:
+                        inv = LocalInventory(
+                            sku=sku,
+                            available_qty=new_qty,
+                            reserved_qty=0,
+                            min_threshold=min_th,
+                            max_threshold=max_th,
+                            version=1
+                        )
+                        db.add(inv)
+                        if new_qty > 0:
+                            ledger = StockLedger(
+                                reference_id=f"INIT-{sku}-{BRANCH_CODE}",
+                                sku=sku,
+                                change_type="INITIAL_STOCK",
+                                quantity=new_qty,
+                                partner_name="Trụ sở chính HQ",
+                                note="Tồn kho khởi tạo khi cập nhật sản phẩm"
+                            )
+                            db.add(ledger)
+                        stock_service._queue_inventory_sync(db, sku, inv.available_qty, inv.reserved_qty)
+                else:
+                    if inv:
+                        if data.get("min_threshold") is not None:
+                            inv.min_threshold = int(data.get("min_threshold"))
+                        if data.get("max_threshold") is not None:
+                            inv.max_threshold = int(data.get("max_threshold"))
+
                 db.commit()
-                logger.info(f"[{BRANCH_CODE}] Đã đồng bộ cập nhật sản phẩm '{sku}'.")
+                logger.info(f"[{BRANCH_CODE}] Đã đồng bộ cập nhật sản phẩm '{sku}' (Tồn kho: {inv.available_qty if inv else 'N/A'}).")
 
             # 7. Đồng bộ xóa sản phẩm từ Master Data Catalog
             elif event_type == "EVT_PRODUCT_DELETED":

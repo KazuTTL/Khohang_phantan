@@ -70,26 +70,55 @@ def run_test():
     assert init_ledger is not None, "Không tìm thấy bút toán INITIAL_STOCK trong Sổ cái HN"
     print(f"-> Sổ cái HN đã ghi nhận bút toán INITIAL_STOCK: Ref={init_ledger['reference_id']}, Qty={init_ledger['quantity']}")
 
-    # 4. Kiểm tra cập nhật thông tin sản phẩm (Update)
-    print("\n[BƯỚC 3] Chỉnh sửa thông tin Master Data của sản phẩm...")
+    # 4. Kiểm tra cập nhật thông tin sản phẩm và điều chỉnh tồn kho chi nhánh (Update with Branch Stock)
+    print("\n[BƯỚC 3] Chỉnh sửa thông tin Master Data và điều chỉnh tồn kho chi nhánh (HN: 45->60, HCM: 25->35)...")
     update_payload = {
         "product_name": f"Thiết bị Đo Kiểm Nâng Cấp {test_id}",
         "unit": "Hộp",
         "price": 13900000.0,
         "min_threshold": 20,
-        "max_threshold": 350
+        "max_threshold": 350,
+        "branch_stock": {
+            "HN": 60,
+            "HCM": 35
+        }
     }
     res_update = client.put(f"{HQ_URL}/api/v1/products/{test_sku}", json=update_payload)
     assert res_update.status_code == 200, f"Lỗi cập nhật sản phẩm: {res_update.text}"
     print("-> Cập nhật thành công tại HQ. Đang chờ đồng bộ tới chi nhánh...")
-    time.sleep(2)
+    time.sleep(3)
 
+    # Kiểm tra snapshot tại HQ
+    res_snap_after = client.get(f"{HQ_URL}/api/v1/inventory/global")
+    snap_after_items = {item["sku"]: item for item in res_snap_after.json()}
+    snap_after = snap_after_items[test_sku]
+    assert snap_after["total_available"] == 95, f"Tổng tồn kỳ vọng 95, thực tế: {snap_after['total_available']}"
+    assert snap_after["branches"]["HN"]["available"] == 60
+    assert snap_after["branches"]["HCM"]["available"] == 35
+    print(f"-> Snapshot HQ ghi nhận số lượng mới: HN=60, HCM=35 (Tổng = 95)")
+
+    # Kiểm tra tồn kho nội bộ tại Chi nhánh HN
     res_hn_after = client.get(f"{HN_URL}/api/v1/inventory")
     hn_inv_after = next((x for x in res_hn_after.json() if x["sku"] == test_sku), None)
     assert hn_inv_after is not None
     assert hn_inv_after["product_name"] == f"Thiết bị Đo Kiểm Nâng Cấp {test_id}"
     assert hn_inv_after["unit"] == "Hộp"
-    print(f"-> Chi nhánh HN đã đồng bộ thông tin mới: Tên='{hn_inv_after['product_name']}', ĐVT='{hn_inv_after['unit']}'")
+    assert hn_inv_after["available_qty"] == 60, f"Tồn kho HN kỳ vọng 60, thực tế: {hn_inv_after['available_qty']}"
+    print(f"-> Chi nhánh HN đã đồng bộ: Tên='{hn_inv_after['product_name']}', Tồn kho={hn_inv_after['available_qty']}")
+
+    # Kiểm tra sổ cái HN ghi nhận HQ_UPDATE
+    res_ledger_hn_after = client.get(f"{HN_URL}/api/v1/ledger")
+    update_ledger_hn = next((l for l in res_ledger_hn_after.json() if l["sku"] == test_sku and l["change_type"] == "HQ_UPDATE"), None)
+    assert update_ledger_hn is not None, "Không tìm thấy bút toán HQ_UPDATE trong Sổ cái HN"
+    assert update_ledger_hn["quantity"] == 15, f"Độ lệch sổ cái kỳ vọng 15, thực tế: {update_ledger_hn['quantity']}"
+    print(f"-> Sổ cái HN ghi nhận biến động HQ_UPDATE: Qty={update_ledger_hn['quantity']}")
+
+    # Kiểm tra tồn kho nội bộ tại Chi nhánh HCM
+    res_hcm_after = client.get(f"{HCM_URL}/api/v1/inventory")
+    hcm_inv_after = next((x for x in res_hcm_after.json() if x["sku"] == test_sku), None)
+    assert hcm_inv_after is not None
+    assert hcm_inv_after["available_qty"] == 35, f"Tồn kho HCM kỳ vọng 35, thực tế: {hcm_inv_after['available_qty']}"
+    print(f"-> Chi nhánh HCM đã đồng bộ tồn kho mới: {hcm_inv_after['available_qty']}")
 
     # 5. Kiểm tra ràng buộc bảo vệ toàn vẹn: Không được xóa khi còn tồn kho (>0)
     print("\n[BƯỚC 4] Kiểm tra ràng buộc an toàn khi xóa sản phẩm đang có tồn kho...")

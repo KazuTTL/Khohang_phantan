@@ -71,6 +71,26 @@ async def update_product(sku: str, payload: ProductUpdate, db: Session = Depends
     prod.product_name = payload.product_name
     prod.unit = payload.unit
     prod.price = payload.price
+
+    # Cập nhật snapshot tồn kho chi nhánh nếu có payload.branch_stock
+    if payload.branch_stock and isinstance(payload.branch_stock, dict):
+        for b_code, new_qty in payload.branch_stock.items():
+            valid_qty = max(0, int(new_qty))
+            snap = db.query(GlobalInventorySnapshot).filter(
+                GlobalInventorySnapshot.sku == sku,
+                GlobalInventorySnapshot.branch_code == b_code
+            ).first()
+            if snap:
+                snap.available_qty = valid_qty
+            else:
+                snap = GlobalInventorySnapshot(
+                    branch_code=b_code,
+                    sku=sku,
+                    available_qty=valid_qty,
+                    reserved_qty=0
+                )
+                db.add(snap)
+
     db.commit()
     db.refresh(prod)
 
@@ -84,7 +104,8 @@ async def update_product(sku: str, payload: ProductUpdate, db: Session = Depends
             "unit": prod.unit,
             "price": prod.price,
             "min_threshold": payload.min_threshold,
-            "max_threshold": payload.max_threshold
+            "max_threshold": payload.max_threshold,
+            "branch_stock": payload.branch_stock
         }
     })
 
