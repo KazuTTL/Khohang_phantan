@@ -338,27 +338,92 @@ export default function LocalBranchPanel({ currentBranch, onActionSuccess }) {
               <p className="p-3 text-slate-500 text-center">Chưa có giao dịch biến động nào.</p>
             ) : (
               <div className="divide-y divide-slate-800">
-                {ledger.slice(0, 7).map(l => (
-                  <div key={l.ledger_id} className="p-2 flex items-center justify-between hover:bg-slate-800/30">
-                    <div className="flex items-center gap-2">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        l.change_type.includes('IN') ? 'bg-emerald-900/60 text-emerald-300' :
-                        l.change_type === 'RESERVE' ? 'bg-amber-900/60 text-amber-300' :
-                        l.change_type === 'AUDIT_ADJUST' ? 'bg-blue-900/60 text-blue-300' :
-                        'bg-rose-900/60 text-rose-300'
-                      }`}>
-                        {l.change_type}
+                {ledger.slice(0, 10).map(l => {
+                  const changeType = l.change_type || '';
+                  const rawQty = l.quantity ?? 0;
+                  const absQty = Math.abs(rawQty);
+
+                  const isDecrease = ['LOCAL_OUT', 'RESERVE', 'COMMIT_OUT'].includes(changeType);
+                  const isIncrease = ['LOCAL_IN', 'TRANSFER_IN', 'RELEASE_RESERVE', 'INITIAL_STOCK'].includes(changeType);
+
+                  let sign = '+';
+                  let displayQty = `+${absQty}`;
+                  let qtyColor = 'text-emerald-400 font-bold';
+                  let badgeClass = 'bg-emerald-900/60 text-emerald-300 border border-emerald-500/30';
+
+                  if (isDecrease) {
+                    sign = '-';
+                    displayQty = `-${absQty}`;
+                    qtyColor = 'text-rose-400 font-bold';
+                    badgeClass = changeType === 'RESERVE'
+                      ? 'bg-amber-900/60 text-amber-300 border border-amber-500/30'
+                      : 'bg-rose-900/60 text-rose-300 border border-rose-500/30';
+                  } else if (isIncrease) {
+                    sign = '+';
+                    displayQty = `+${absQty}`;
+                    qtyColor = 'text-emerald-400 font-bold';
+                    badgeClass = 'bg-emerald-900/60 text-emerald-300 border border-emerald-500/30';
+                  } else if (changeType === 'AUDIT_ADJUST') {
+                    badgeClass = 'bg-blue-900/60 text-blue-300 border border-blue-500/30';
+                    if (rawQty < 0) {
+                      sign = '-';
+                      displayQty = `-${absQty}`;
+                      qtyColor = 'text-rose-400 font-bold';
+                    } else if (rawQty > 0) {
+                      sign = '+';
+                      displayQty = `+${absQty}`;
+                      qtyColor = 'text-emerald-400 font-bold';
+                    } else {
+                      sign = '';
+                      displayQty = '0';
+                      qtyColor = 'text-slate-400 font-bold';
+                    }
+                  } else if (changeType === 'HQ_UPDATE') {
+                    badgeClass = 'bg-amber-900/60 text-amber-300 border border-amber-500/30';
+                    if (rawQty < 0) {
+                      sign = '-';
+                      displayQty = `-${absQty}`;
+                      qtyColor = 'text-rose-400 font-bold';
+                    } else if (rawQty > 0) {
+                      sign = '+';
+                      displayQty = `+${absQty}`;
+                      qtyColor = 'text-emerald-400 font-bold';
+                    } else {
+                      sign = '';
+                      displayQty = '0';
+                      qtyColor = 'text-slate-400 font-bold';
+                    }
+                  } else {
+                    if (rawQty < 0) {
+                      sign = '-';
+                      displayQty = `-${absQty}`;
+                      qtyColor = 'text-rose-400 font-bold';
+                    } else {
+                      sign = '+';
+                      displayQty = `+${absQty}`;
+                      qtyColor = 'text-emerald-400 font-bold';
+                    }
+                  }
+
+                  return (
+                    <div key={l.ledger_id} className="p-2 flex items-center justify-between hover:bg-slate-800/30">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${badgeClass}`}>
+                          {l.change_type}
+                        </span>
+                        <span className="text-slate-300 font-semibold">
+                          {l.sku} <span className={qtyColor}>({displayQty})</span>
+                        </span>
+                        {l.partner_name && (
+                          <span className="text-[11px] text-slate-400 font-sans">[{l.partner_name}]</span>
+                        )}
+                      </div>
+                      <span className="text-slate-500 text-[10px] truncate max-w-[160px]" title={l.reference_id}>
+                        {l.reference_id}
                       </span>
-                      <span className="text-slate-300 font-semibold">{l.sku} ({l.quantity >= 0 ? '+' : ''}{l.quantity})</span>
-                      {l.partner_name && (
-                        <span className="text-[11px] text-slate-400 font-sans">[{l.partner_name}]</span>
-                      )}
                     </div>
-                    <span className="text-slate-500 text-[10px] truncate max-w-[160px]" title={l.reference_id}>
-                      {l.reference_id}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
