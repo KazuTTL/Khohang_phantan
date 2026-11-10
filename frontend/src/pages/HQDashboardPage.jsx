@@ -7,7 +7,6 @@ import NodeStatusBanner from '../components/NodeStatusBanner';
 import GlobalStockTable from '../components/GlobalStockTable';
 import TransferOrderForm from '../components/TransferOrderForm';
 import SagaTimelineModal from '../components/SagaTimelineModal';
-import NetworkChaosSimulator from '../components/NetworkChaosSimulator';
 
 export default function HQDashboardPage() {
   const { currentUser, logout } = useAuth();
@@ -129,9 +128,6 @@ export default function HQDashboardPage() {
         {/* Node Status Banner */}
         <NodeStatusBanner nodesStatus={nodesStatus} />
 
-        {/* Distributed Properties & Chaos Simulator */}
-        <NetworkChaosSimulator />
-
         {/* Bảng tồn kho toàn cục & Form tạo đơn điều chuyển Saga */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-7">
@@ -142,7 +138,10 @@ export default function HQDashboardPage() {
             />
           </div>
           <div className="lg:col-span-5">
-            <TransferOrderForm onTransferCreated={fetchHQData} />
+            <TransferOrderForm 
+              products={globalStock} 
+              onTransferCreated={fetchHQData} 
+            />
           </div>
         </div>
 
