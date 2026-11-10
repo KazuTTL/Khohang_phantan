@@ -1,207 +1,209 @@
-# HE THONG QUAN LY KHO HANG PHAN TAN DA CHI NHANH (DISTRIBUTED WMS)
+# HỆ THỐNG QUẢN LÝ KHO HÀNG PHÂN TÁN ĐA CHI NHÁNH (DISTRIBUTED WMS)
 
-He thong Quan ly Kho hang Phan tan (Distributed Warehouse Management System) duoc thiet ke theo kien truc Vi dich vu (Microservices) chia se khong gian luu tru doc lap (Shared-Nothing Architecture), mo hinh giao tiep bat dong bo Event-driven qua RabbitMQ Topic Exchange, ap dung cac nguyen ly cot loi cua He thong phan tan: Dinh ly CAP (AP + Eventual Consistency), Saga Pattern, Outbox Pattern, Idempotency va Optimistic Concurrency Control.
-
----
-
-## 1. TONG QUAN KIEN TRUC VA CAC NODE HE THONG
-
-He thong bao gom 3 Node dich vu doc lap hoan toan va Message Broker:
-
-1. **Node Tru so chinh (HQ Service - Cong 8000):**
-   - Dong vai tro Master Data Catalog: Quan ly danh muc hang hoa goc, chinh sach don gia.
-   - Dong vai tro Saga Coordinator: Dieu phoi cac don dieu chuyen kho lien chi nhanh.
-   - Global Read-Model Snapshot (CQRS): Thu thap va luu tru ban chup ton kho toan quoc de phuc vu tra cuu tong the.
-2. **Node Chi nhanh Ha Noi (Branch HN - Cong 8001):**
-   - Co CSDL rieng biet (db_branch_hn.db), quan ly ton kho noi bo tai Ha Noi.
-   - Tien trinh nen Outbox Worker rieng, dam bao tinh tu tri cuc bo (Local Autonomy).
-3. **Node Chi nhanh TP.HCM (Branch HCM - Cong 8002):**
-   - Co CSDL rieng biet (db_branch_hcm.db), quan ly ton kho noi bo tai TP.HCM.
-   - Tien trinh nen Outbox Worker rieng, tiep nhan va xac nhan/tu choi cac kien hang dieu chuyen.
-4. **Message Broker (RabbitMQ - Cong 5672 AMQP, 15672 Web Management):**
-   - Topic Exchange 'distributed_warehouse' ket noi va phan phoi su kien giua cac node mot cach bat dong bo.
-5. **Giao dien Nguoi dung (Frontend ReactJS - Cong 3000):**
-   - Dashboard quan tri phan tach Route doc lap theo tung kho, xac thuc JWT Bearer Token va phan quyen chat che.
+Hệ thống Quản lý Kho hàng Phân tán (Distributed Warehouse Management System) được thiết kế theo kiến trúc Vi dịch vụ (Microservices) chia sẻ không gian lưu trữ độc lập (Shared-Nothing Architecture), mô hình giao tiếp bất đồng bộ hướng sự kiện (Event-driven) qua RabbitMQ Topic Exchange, áp dụng đầy đủ các nguyên lý cốt lõi của môn học Các hệ thống phân tán: Định lý CAP (Lựa chọn AP + Eventual Consistency), Saga Pattern (Saga Orchestration & Compensating Transaction), Outbox Pattern, Idempotency (Tính bất biến) và Optimistic Concurrency Control (Khóa lạc quan chống tranh chấp âm kho).
 
 ---
 
-## 2. BANG DIA CHI VA CONG TRUY CAP DICH VU
+## 1. TỔNG QUAN KIẾN TRÚC VÀ CÁC NODE HỆ THỐNG
 
-| Thanh phan | Dia chi URL | Chuc nang |
+Hệ thống bao gồm 3 Node dịch vụ độc lập hoàn toàn và cụm Message Broker trung gian:
+
+1. **Node Trụ sở chính (HQ Service - Cổng 8000):**
+   - Đóng vai trò Master Data Catalog: Quản lý danh mục hàng hóa gốc, duyệt chính sách giá bán.
+   - Đóng vai trò Saga Coordinator: Khởi tạo và điều phối các giao dịch chuyển kho liên chi nhánh.
+   - Bản chụp tồn kho toàn cục (Global Read-Model Snapshot - CQRS): Thu thập và cập nhật bất đồng bộ số liệu tồn kho từ các chi nhánh để phục vụ tra cứu toàn quốc mà không cần quét trực tiếp vào database chi nhánh.
+   - Tiến trình Saga Timeout Worker: Tự động phát hiện các đơn hàng bị treo do đứt kết nối mạng để kích hoạt giao dịch bù trừ hoàn tác.
+2. **Node Chi nhánh Hà Nội (Branch HN - Cổng 8001):**
+   - Sở hữu cơ sở dữ liệu riêng biệt (db_branch_hn.db), tự trị quản lý tồn kho nội bộ tại Hà Nội.
+   - Tiến trình Outbox Worker riêng: Đảm bảo việc ghi CSDL và bắn sự kiện sang RabbitMQ diễn ra tin cậy tuyệt đối (chống mất tin theo nguyên tắc At-Least-Once Delivery).
+3. **Node Chi nhánh TP.HCM (Branch HCM - Cổng 8002):**
+   - Sở hữu cơ sở dữ liệu riêng biệt (db_branch_hcm.db), tự trị quản lý tồn kho nội bộ tại TP.HCM.
+   - Tiến trình Outbox Worker riêng: Tiếp nhận, phê duyệt xác nhận nhập kho hoặc từ chối kiện hàng để kích hoạt quy trình bù trừ hoàn tác.
+4. **Message Broker (RabbitMQ - Cổng 5672 AMQP, 15672 Web Management):**
+   - Topic Exchange `distributed_warehouse` chịu trách nhiệm phân phối thông điệp và sự kiện bất đồng bộ giữa các node, giúp các dịch vụ không bị phụ thuộc trực tiếp vào nhau (Decoupling).
+5. **Giao diện Người dùng (Frontend ReactJS - Cổng 3000):**
+   - Dashboard quản trị phân tách Route độc lập theo từng kho, xác thực người dùng bằng JWT Bearer Token và kiểm soát phân quyền (RBAC) nghiêm ngặt.
+
+---
+
+## 2. BẢNG ĐỊA CHỈ VÀ CỔNG TRUY CẬP DỊCH VỤ
+
+| Thành phần | Địa chỉ URL | Chức năng chính |
 | :--- | :--- | :--- |
-| **Giao dien Web (Frontend)** | http://localhost:3000 | Web Dashboard quan tri he thong |
-| **Node Tru so chinh (HQ)** | http://localhost:8000/docs | Swagger REST API Tru so chinh |
-| **Node Chi nhanh Ha Noi (HN)** | http://localhost:8001/docs | Swagger REST API Chi nhanh Ha Noi |
-| **Node Chi nhanh TP.HCM (HCM)** | http://localhost:8002/docs | Swagger REST API Chi nhanh TP.HCM |
-| **RabbitMQ Management** | http://localhost:15672 | Quan tri Message Broker (guest / guest) |
-| **MSSQL Database** | localhost:14333 | CSDL quan he Microsoft SQL Server |
+| **Giao diện Web (Frontend)** | http://localhost:3000 | Web Dashboard quản trị toàn bộ hệ thống |
+| **Node Trụ sở chính (HQ)** | http://localhost:8000/docs | Tài liệu Swagger REST API Trụ sở chính |
+| **Node Chi nhánh Hà Nội (HN)** | http://localhost:8001/docs | Tài liệu Swagger REST API Chi nhánh Hà Nội |
+| **Node Chi nhánh TP.HCM (HCM)** | http://localhost:8002/docs | Tài liệu Swagger REST API Chi nhánh TP.HCM |
+| **RabbitMQ Management** | http://localhost:15672 | Bảng điều khiển Message Broker (guest / guest) |
+| **MSSQL Database** | localhost:14333 | CSDL quan hệ Microsoft SQL Server 2022 |
 
 ---
 
-## 3. HUONG DAN CAI DAT VA KHOI CHAY (QUICK START)
+## 3. HƯỚNG DẪN CÀI ĐẶT VÀ KHỞI CHẠY (QUICK START)
 
-### 3.1. Yeu cau he thong
-- Da cai dat Docker Desktop va Docker Compose (hoac WSL2 tren Windows).
-- Python 3.11+ (dung de chay cac kịch ban kiem thu tu dong trong thu muc tests/).
+### 3.1. Yêu cầu hệ thống
+- Đã cài đặt Docker Desktop và Docker Compose (trên Windows, macOS hoặc Linux).
+- Đã cài đặt Python 3.11+ (dùng để chạy các kịch bản kiểm thử tự động trong thư mục `tests/`).
 
-### 3.2. Khoi chay toan bo he thong bang Docker Compose
-Mo Terminal (PowerShell hoac Bash) tai thu muc goc cua du an va chay lenh:
+### 3.2. Khởi chạy toàn bộ hệ thống bằng Docker Compose
+Mở Terminal (PowerShell hoặc Bash) tại thư mục gốc của dự án và thực hiện lệnh:
 
 ```bash
 docker compose up -d --build
 ```
 
-Lenh tren se tu dong bien dich va khoi chay 6 container:
-- `rabbitmq_wms`
-- `sqlserver_wms`
-- `hq_service`
-- `branch_hn`
-- `branch_hcm`
-- `frontend_wms`
+Lệnh trên sẽ tự động biên dịch mã nguồn và khởi chạy 6 container:
+- `rabbitmq_wms`: Message Broker RabbitMQ 3.13 Management.
+- `sqlserver_wms`: CSDL quan hệ Microsoft SQL Server 2022.
+- `hq_service`: Dịch vụ Trụ sở chính (FastAPI - Cổng 8000).
+- `branch_hn`: Dịch vụ Chi nhánh Hà Nội (FastAPI - Cổng 8001).
+- `branch_hcm`: Dịch vụ Chi nhánh TP.HCM (FastAPI - Cổng 8002).
+- `frontend_wms`: Giao diện Web Dashboard (ReactJS + Vite - Cổng 3000).
 
-### 3.3. Kiem tra trang thai hoat dong cua cac Service
-Sau khi cac container khoi dong khoang 15-20 giay, kiem tra endpoint suc khoe (Health check):
+### 3.3. Kiểm tra trạng thái hoạt động của các dịch vụ
+Sau khi khởi chạy khoảng 15 đến 20 giây để RabbitMQ hoàn tất mở cổng kết nối, chạy các lệnh kiểm tra sức khỏe (Health Check):
 
 ```bash
-# Kiem tra ket noi giua 3 node backend voi RabbitMQ Broker
+# Kiểm tra kết nối giữa 3 node backend với RabbitMQ Broker
 curl -s http://localhost:8000/health
 curl -s http://localhost:8001/health
 curl -s http://localhost:8002/health
 ```
-Ket qua tra ve phai co `status: "UP"` va `broker_connected: true`.
 
-*Luu y:* Neu RabbitMQ vua khoi dong lan dau can vai giay de mo cong 5672, neu thay `broker_connected: false`, chi can khoi dong lai 3 backend:
+Kết quả phản hồi hợp lệ phải chứa `status: "UP"` và `broker_connected: true`.
+
+*Lưu ý:* Nếu RabbitMQ khởi động chậm hơn backend trong lần chạy đầu tiên khiến cờ `broker_connected: false`, bạn chỉ cần khởi động lại 3 backend bằng lệnh:
 ```bash
 docker restart hq_service branch_hn branch_hcm
 ```
 
-### 3.4. Dung he thong
-Khi can tat toan bo cuem dich vu:
+### 3.4. Dừng toàn bộ hệ thống
+Khi cần tắt toàn bộ cụm dịch vụ:
 ```bash
 docker compose down
 ```
 
 ---
 
-## 4. HE THONG TAI KHOAN VA PHAN QUYEN (RBAC & JWT)
+## 4. HỆ THỐNG TÀI KHOẢN VÀ PHÂN QUYỀN (RBAC & JWT)
 
-He thong phan tach Route va tai khoan ro rang theo vai tro tai `http://localhost:3000/login`:
+Hệ thống phân tách Route và tài khoản rõ ràng theo vai trò tại địa chỉ `http://localhost:3000/login`:
 
-| Tai khoan | Mat khau | Vai tro (Role) | Chi nhanh | Pham vi quyen han |
+| Tên tài khoản | Mật khẩu | Vai trò (Role) | Chi nhánh | Quyền hạn và Phạm vi hoạt động |
 | :--- | :--- | :--- | :--- | :--- |
-| **admin** | admin123 | HQ_MANAGER | HQ | Toan quyen quan tri Tru so chinh: CRUD Master Catalog, phan bo ton dau ky, phat lenh dieu chuyen Saga, giam sat toan quoc. |
-| **manager_hn** | hn123 | BRANCH_MANAGER | HN | Quan tri Chi nhanh Ha Noi: Xuat/nhap tai cho, duyet kien hang den, kiem ke kho thuc te. Khong duoc sua du lieu kho khac. |
-| **manager_hcm** | hcm123 | BRANCH_MANAGER | HCM | Quan tri Chi nhanh TP.HCM: Tuong tu Ha Noi, chi thao tac tren du lieu kho TP.HCM. |
-| **staff_hn** | staff123 | BRANCH_STAFF | HN | Thu kho Ha Noi: Thuc hien xuat nhap, kiem ke tai ke. |
-| **staff_hcm** | staff123 | BRANCH_STAFF | HCM | Thu kho TP.HCM: Thuc hien xuat nhap, kiem ke tai ke. |
+| **admin** | admin123 | HQ_MANAGER | HQ | Toàn quyền quản trị Trụ sở chính: Thêm/Sửa/Xóa Master Catalog, phân bổ tồn đầu kỳ cho chi nhánh, phát lệnh điều chuyển phân tán Saga, giám sát toàn quốc. |
+| **manager_hn** | hn123 | BRANCH_MANAGER | HN | Quản lý Chi nhánh Hà Nội: Xuất bán/Nhập mua tại chỗ, duyệt kiện hàng chuyển đến, lập phiếu kiểm kê thực tế tại kệ. Không được can thiệp vào kho khác. |
+| **manager_hcm** | hcm123 | BRANCH_MANAGER | HCM | Quản lý Chi nhánh TP.HCM: Tương tự Hà Nội, chỉ thao tác trên phạm vi CSDL kho TP.HCM. |
+| **staff_hn** | staff123 | BRANCH_STAFF | HN | Thủ kho Hà Nội: Thực hiện phiếu xuất nhập, đếm hàng kiểm kê tại kệ. |
+| **staff_hcm** | staff123 | BRANCH_STAFF | HCM | Thủ kho TP.HCM: Thực hiện phiếu xuất nhập, đếm hàng kiểm kê tại kệ. |
 
-*Ghi chu:* Tren man hinh dang nhap `/login` co san khay **"Tai khoan mau bao cao do an (Quick Login)"** gom 4 nut an de ban co the click dang nhap nhanh ngay lap tuc ma khong can go phim.
-
----
-
-## 5. PHAN TACH ROUTE VA CAC TRANG CHUC NANG
-
-### 5.1. Trang Dang Nhap (`/login`)
-- Xac thuc thong qua REST API `POST /api/v1/auth/login` cap token JWT Bearer.
-- Tu dong luu token vao `localStorage` va chuyen huong ve dung trang cua vai tro tuong ung.
-
-### 5.2. Trang Quan tri Tru so chinh (`/hq` hoac `/`)
-- Chi danh cho tai khoan `HQ_MANAGER`.
-- **Quan ly Danh muc Hang hoa (Master Catalog):**
-  + Nut *Thêm Mat Hang Moi*: Cho phep nhap thong tin san pham va chi dinh luon Ton dau ky cho Kho Ha Noi va Kho TP.HCM. Su kien `evt.catalog.product_created` se tu dong phat tan dong bo ve CSDL cua ca 2 chi nhanh.
-  + Nut *Sua*: Chinh sua ten, don vi tinh, don gia, dinh muc ton an toan Min/Max.
-  + Nut *Xoa*: Tich hop co che bao ve toan ven du lieu (Delete Protection), chi cho phep xoa khi toan bo ton kho tren toan he thong bang 0.
-- **Dieu phoi Saga (Saga Coordinator):**
-  + Form tao don dieu chuyen kho giua Ha Noi va TP.HCM.
-  + Bang nhat ky dong thoi gian Saga (Saga Timeline): Theo doi cac trang thai `INITIATED`, `RESERVED_IN_TRANSIT`, `COMPLETED`, `COMPENSATING`, `CANCELLED_ROLLED_BACK`.
-- **Bo Gia lap Su co Phan tan (Network Chaos Simulator):**
-  + Trinh dien 3 dac tinh phan tan: Tinh tu tri cuc bo (Local Autonomy), Kha nang tu phuc hoi sau sup nguon (Crash Recovery) va Saga Coordinator Timeout.
-- **Thanh Giam sat Nhanh:** Co the bam sang xem goc nhin cua Kho Ha Noi va Kho TP.HCM.
-
-### 5.3. Trang Chi nhanh Ha Noi (`/branch/hn`) va TP.HCM (`/branch/hcm`)
-- Danh rieng cho nhan su cua tung chi nhanh tuong ung.
-- **Nghiep vu Kho Cuc bo (Local Autonomy):**
-  + Tab *Xuat Ban / Nhap Mua*: Nhap hang tu Nha cung cap hoac Xuat ban cho Khach hang kem so hoa don va ghi chu.
-  + Tab *Kiem Ke Thuc Te*: Nhap so luong dem thuc te tai ke, he thong tu dong tinh toan muc chenh lech va can doi so du so sach.
-  + Thiet lap Dinh muc Ton kho Min/Max de kich hoat co canh bao thieu hang `is_low_stock`.
-- **Tiep nhan Kien hang Chuyen kho (Incoming Transfers):**
-  + Xem danh sach cac kien hang dang tren duong chuyen toi chi nhanh.
-  + Nut *Xac Nhan Nhap Kho*: Hoan tat don Saga thanh cong (`COMPLETED`).
-  + Nut *Tu Choi Nhan Hang*: Kich hoat quy trinh bu tru hoan tac (`Saga Rollback`), tra hang ve kho nguon.
-- **Bang Doi soat Ton kho Toan quoc (Read-Only):**
-  + Xem so lieu ton kho toan he thong o che do Chi doc (an cac nut tao/sua/xoa).
-- **Rao chan Bao ve Phap quy (RBAC Guard):**
-  + Neu nhan vien kho HN co tinh truy cap `/branch/hcm`, he thong se chan va bao loi 403 Forbidden.
+*Tiện ích:* Trên màn hình đăng nhập `/login` có tích hợp sẵn khay **"Tài khoản mẫu báo cáo đồ án (Quick Login)"** gồm 4 nút bấm tiện lợi, người dùng chỉ cần click chuột để đăng nhập ngay mà không cần nhập thủ công.
 
 ---
 
-## 6. HUONG DAN KIEM THU TU DONG QUA TERMINAL (TEST SUITES)
+## 5. PHÂN TÁCH ROUTE VÀ CÁC TRANG CHỨC NĂNG
 
-Tat ca cac kich ban kiem thu phan tan da duoc dong goi thanh cac script Python doc lap trong thu muc `tests/`.
+### 5.1. Trang Đăng Nhập (`/login`)
+- Xác thực tài khoản qua REST API `POST /api/v1/auth/login`, cấp phát mã JWT Bearer Token có chữ ký số HMAC-SHA256.
+- Tự động lưu Token vào `localStorage` và chuyển hướng người dùng về đúng trang quản trị theo vai trò.
 
-### 6.1. Chay toan bo bo kiem thu (Khuyen nghi)
-Mo PowerShell tai thu muc goc cua du an va chay:
+### 5.2. Trang Quản trị Trụ sở Chính (`/hq` hoặc `/`)
+- Dành riêng cho tài khoản có vai trò `HQ_MANAGER`.
+- **Quản lý Danh mục Hàng hóa Master Data:**
+  + Nút *Thêm Mặt Hàng Mới*: Nhập mã SKU, tên, đơn vị tính, đơn giá và chỉ định trực tiếp số lượng Tồn kho đầu kỳ cho Kho Hà Nội và Kho TP.HCM. Sự kiện `evt.catalog.product_created` sẽ tự động phát tán qua RabbitMQ để nạp vào CSDL cục bộ của cả 2 chi nhánh.
+  + Nút *Sửa*: Cập nhật thông tin hàng hóa và đồng bộ tức thì sang các kho.
+  + Nút *Xóa*: Tích hợp cơ chế Ràng buộc xóa an toàn (Delete Protection), chỉ cho phép xóa mặt hàng khi toàn bộ tồn kho trên tất cả các chi nhánh bằng 0.
+- **Bộ điều phối Giao dịch Phân tán (Saga Coordinator):**
+  + Form tạo đơn điều chuyển kho liên chi nhánh (Kho nguồn -> Kho đích).
+  + Bảng Dòng thời gian Saga (Saga Timeline): Giám sát trạng thái điều phối theo thời gian thực: `INITIATED` -> `RESERVED_IN_TRANSIT` -> `COMPLETED` hoặc `CANCELLED_ROLLED_BACK`.
+- **Bộ Giả lập & Chứng minh Đặc tính Phân tán (Network Chaos Simulator):**
+  + Minh họa trực quan 3 đặc tính: Tự trị cục bộ (Local Autonomy), Khôi phục sau sự cố sập nguồn (Crash Recovery) và Tự động hoàn tác do quá hạn (Saga Coordinator Timeout).
+- **Thanh Giám sát Nhanh:** Hỗ trợ Quản trị viên HQ chuyển nhanh sang góc nhìn kiểm tra của Kho Hà Nội và Kho TP.HCM.
+
+### 5.3. Trang Chi nhánh Hà Nội (`/branch/hn`) và TP.HCM (`/branch/hcm`)
+- Dành riêng cho nhân sự của từng chi nhánh tương ứng.
+- **Nghiệp vụ Kho Cục bộ (Local Autonomy):**
+  + Tab *Nhập Mua / Xuất Bán*: Nhập hàng từ Nhà cung cấp hoặc Xuất bán cho Khách hàng, ghi nhận đối tác và số hóa đơn vào sổ cái `Stock_Ledger`.
+  + Tab *Kiểm Kê Thực Tế*: Nhập số lượng đếm thực tế tại kệ, hệ thống tự động so khớp với số liệu sổ sách, tính chênh lệch và điều chỉnh số dư khả dụng (`AUDIT_ADJUST`).
+  + Cập nhật Định mức Tồn kho Min/Max để kích hoạt cờ cảnh báo thiếu hàng `is_low_stock`.
+- **Tiếp nhận Kiện hàng Điều chuyển (Incoming Transfers):**
+  + Xem danh sách các kiện hàng đang trên đường chuyển đến chi nhánh.
+  + Nút *Xác Nhận Nhập Kho*: Tiếp nhận hàng hóa vào kho, hoàn tất đơn Saga (`COMPLETED`).
+  + Nút *Từ Chối Nhận Hàng*: Phát sự kiện từ chối, kích hoạt quy trình giao dịch bù trừ hoàn tác (`Saga Rollback`) để hoàn trả số hàng khóa tạm về tồn khả dụng tại kho nguồn.
+- **Bảng Đối soát Tồn kho Toàn quốc (Read-Only):**
+  + Xem số liệu tồn kho toàn hệ thống ở chế độ Chỉ Đọc (ẩn toàn bộ các nút thêm/sửa/xóa của HQ).
+- **Rào chắn Phân quyền (RBAC Route Guard):**
+  + Nếu tài khoản thuộc Chi nhánh Hà Nội cố tình truy cập vào tuyến đường `/branch/hcm`, hệ thống sẽ chặn và hiển thị màn hình cảnh báo 403 Forbidden.
+
+---
+
+## 6. HƯỚNG DẪN KIỂM THỬ TỰ ĐỘNG QUA TERMINAL (TEST SUITES)
+
+Dự án cung cấp bộ kịch bản kiểm thử tự động toàn diện được viết bằng Python trong thư mục `tests/`.
+
+### 6.1. Thực thi các kịch bản kiểm thử
+Mở Terminal (PowerShell trên Windows) tại thư mục gốc của dự án và chạy các lệnh:
 
 ```powershell
 $env:PYTHONIOENCODING="utf-8"
 
-# 1. Kiem thu Saga dieu chuyen thanh cong (Happy Path)
+# 1. Kiểm thử Saga điều chuyển thành công theo luồng chuẩn (Happy Path)
 python tests/test_saga_happy_path.py
 
-# 2. Kiem thu Giao dich bu tru Saga Rollback khi kho dich tu choi
+# 2. Kiểm thử Giao dịch bù trừ hoàn tác khi kho đích từ chối nhận hàng (Saga Rollback)
 python tests/test_saga_rollback.py
 
-# 3. Kiem thu 10 yeu cau dong thoi chong am kho (Race Condition & Optimistic Locking)
+# 3. Kiểm thử 10 yêu cầu xuất kho đồng thời chống âm kho (Race Condition & Optimistic Locking)
 python tests/test_concurrency_race_condition.py
 
-# 4. Kiem thu Tinh nang nang cap toan dien (JWT Auth, Catalog Replication, Audit, Persist DB)
+# 4. Kiểm thử toàn diện tính năng nâng cấp (JWT Auth, Catalog Replication, Kiểm kê kho, Bền bỉ hóa CSDL)
 python tests/test_new_enhancements.py
 
-# 5. Kiem thu CRUD San pham, Phan bo ton dau ky HN/HCM va Rang buoc xoa an toan
+# 5. Kiểm thử CRUD Master Data, Phân bổ tồn đầu kỳ HN/HCM và Ràng buộc xóa an toàn
 python tests/test_crud_refinement.py
 ```
 
-### 6.2. Y nghia ket qua cac bai test
-- `test_saga_happy_path.py`: Kho HN giam 20, kho HCM tang 20, Saga HQ dat `COMPLETED`.
-- `test_saga_rollback.py`: Kho HCM tu choi nhan hang, Saga Coordinator phat lenh bu tru `CMD_RELEASE_STOCK`, kho HN duoc hoan tra day du so hang tam khoa ve ton kha dung, don chuyen sang `CANCELLED_ROLLED_BACK`.
-- `test_concurrency_race_condition.py`: Ban dong thoi 10 request doi xuat 150 san pham trong khi ton chi co 80. He thong chap thuan dung 5 request (75 san pham), chan 5 request con lai, ton con dung 5, tuyet doi khong bi am kho.
-- `test_crud_refinement.py`: Tao san pham tai HQ kem so ton kho HN va HCM, kiem tra CSDL chi nhanh tu dong nhan su kien va luu but toan `INITIAL_STOCK`, kiem tra co che chan xoa san pham khi con ton kho.
+### 6.2. Ý nghĩa và kết quả xác minh của từng kịch bản
+- `test_saga_happy_path.py`: Kho HN giảm 20, kho HCM tăng 20, đơn Saga tại HQ chuyển trạng thái `COMPLETED`.
+- `test_saga_rollback.py`: Kho HCM từ chối nhận hàng, Saga Coordinator phát lệnh bù trừ `CMD_RELEASE_STOCK`, kho HN nhận lệnh và hoàn trả đầy đủ 15 sản phẩm giữ chỗ về tồn khả dụng, đơn Saga chuyển `CANCELLED_ROLLED_BACK`.
+- `test_concurrency_race_condition.py`: Gửi đồng thời 10 yêu cầu đòi xuất tổng cộng 150 sản phẩm trong khi tồn khả dụng chỉ có 80. Hệ thống xử lý thành công đúng 5 yêu cầu (75 sản phẩm), chặn 5 yêu cầu còn lại, tồn kho còn đúng 5, tuyệt đối không bị âm kho.
+- `test_crud_refinement.py`: Tạo sản phẩm mới tại HQ kèm chỉ định tồn kho cho HN (45) và HCM (25). CSDL chi nhánh tự động đồng bộ và ghi nhận bút toán `INITIAL_STOCK`. Kiểm tra hệ thống từ chối xóa sản phẩm khi vẫn còn tồn kho (>0). Sau khi kiểm kê về 0, thực hiện xóa thành công khỏi toàn bộ các node.
 
 ---
 
-## 7. CAU TRUC THU MUC DU AN
+## 7. CẤU TRÚC THƯ MỤC DỰ ÁN
 
 ```
 Khohang_phantan/
 ├── backend/
-│   ├── branch_service/              # Node Chi nhanh (FastAPI)
-│   │   ├── consumers/               # RabbitMQ consumer lang nghe lenh dieu phoi
-│   │   ├── routers/                 # API ton kho, kien hang den, kiem ke
-│   │   ├── services/                # Xu ly nghiep vu ton kho va Outbox Worker
-│   │   └── models.py                # Mo hinh CSDL SQLite cuc bo
-│   ├── hq_service/                  # Node Tru so chinh (FastAPI)
-│   │   ├── routers/                 # API danh muc, dieu chuyen Saga, snapshot
-│   │   ├── services/                # Saga Timeout Worker tu phuc hoi
-│   │   └── models.py                # Mo hinh CSDL Master Catalog & Snapshots
-│   └── shared/                      # Thu vien dung chung
-│       ├── auth.py                  # Module xac thuc HMAC-SHA256 Token & RBAC
-│       ├── event_schemas.py         # Hop dong thong diep Pydantic
-│       └── rabbitmq_client.py       # Wrapper ket noi Topic Exchange bat dong bo
+│   ├── branch_service/              # Dịch vụ Node Chi nhánh (FastAPI)
+│   │   ├── consumers/               # RabbitMQ Consumer tiếp nhận lệnh điều phối
+│   │   ├── routers/                 # REST API tồn kho, kiện hàng đến, kiểm kê
+│   │   ├── services/                # Nghiệp vụ tồn kho và tiến trình Outbox Worker
+│   │   └── models.py                # Mô hình CSDL SQLite cục bộ chi nhánh
+│   ├── hq_service/                  # Dịch vụ Node Trụ sở chính (FastAPI)
+│   │   ├── routers/                 # REST API danh mục, điều chuyển Saga, snapshot
+│   │   ├── services/                # Tiến trình Saga Timeout Worker tự phục hồi
+│   │   └── models.py                # Mô hình CSDL Master Catalog & Snapshots
+│   └── shared/                      # Thư viện dùng chung giữa các node
+│       ├── auth.py                  # Module xác thực HMAC-SHA256 Token & RBAC
+│       ├── event_schemas.py         # Hợp đồng thông điệp phân tán (Pydantic)
+│       └── rabbitmq_client.py       # Wrapper kết nối Topic Exchange RabbitMQ
 ├── frontend/                        # Web Dashboard (ReactJS + Vite + TailwindCSS)
 │   └── src/
 │       ├── components/              # GlobalStockTable, LocalBranchPanel, ChaosSimulator...
-│       ├── context/                 # AuthContext quan ly JWT session
+│       ├── context/                 # AuthContext quản lý JWT session
 │       ├── pages/                   # LoginPage, HQDashboardPage, BranchDashboardPage
-│       ├── api/client.js            # Client goi REST API kem Authorization header
-│       └── App.jsx                  # Root container va Route Dispatcher
-├── tests/                           # Cac tap tin kiem thu phan tan tu dong
-├── Implement/                       # Nhat ky tien do trien khai chi tiet theo ngay
-├── docker-compose.yml               # Cau hinh khoi chay toan bo 6 container
-└── README.md                        # Tai lieu huong dan du an nay
+│       ├── api/client.js            # Client gọi REST API đính kèm Authorization header
+│       └── App.jsx                  # Root Container và Bộ điều hướng Route Dispatcher
+├── tests/                           # Bộ kịch bản kiểm thử phân tán tự động
+├── Implement/                       # Nhật ký tiến độ và chi tiết triển khai theo ngày
+├── docker-compose.yml               # Cấu hình khởi chạy toàn bộ 6 container
+└── README.md                        # Tài liệu hướng dẫn dự án tiếng Việt
 ```
 
 ---
 
-## 8. TAI LIEU THAM KHAO BO SUNG
-- **Huong dan Thuyet trinh va Bo cau hoi phan bien Do an:** Xem file `HUONG_DAN_TEST_VA_KICH_BAN_BAO_CAO_DO_AN_UDPT.md`.
-- **Nhat ky Trien khai Chi tiet:** Xem cac file tong ket tai thu muc `Implement/2026-11-09.md` va `Implement/2026-11-10.md`.
+## 8. TÀI LIỆU THAM KHẢO VÀ HƯỚNG DẪN BÁO CÁO ĐỒ ÁN
+- **Cẩm nang Hướng dẫn Thuyết trình & Bộ câu hỏi phản biện:** Xem tệp `HUONG_DAN_TEST_VA_KICH_BAN_BAO_CAO_DO_AN_UDPT.md` để nắm kịch bản nói 5 - 7 phút trước hội đồng và câu trả lời cho các câu hỏi lý thuyết phân tán hóc búa.
+- **Nhật ký Triển khai Chi tiết:** Xem các tệp báo cáo tổng kết tại thư mục `Implement/2026-11-09.md` và `Implement/2026-11-10.md`.
