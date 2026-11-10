@@ -5,10 +5,14 @@ export const HCM_URL = "http://localhost:8002";
 
 export async function fetchJson(url, options = {}) {
   try {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('wms_token') : null;
+    const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
+
     const res = await fetch(url, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders,
         ...(options.headers || {})
       }
     });

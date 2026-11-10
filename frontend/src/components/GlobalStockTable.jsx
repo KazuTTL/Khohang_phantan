@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
 
-export default function GlobalStockTable({ globalStock, loading, onRefresh }) {
+export default function GlobalStockTable({ globalStock, loading, onRefresh, readOnly = false }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
 
@@ -158,17 +158,19 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh }) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              setShowAddModal(true);
-              setEditingProduct(null);
-              setMsg(null);
-            }}
-            className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-indigo-950/40"
-          >
-            <i className="fa-solid fa-plus"></i>
-            Thêm Mặt Hàng Mới
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => {
+                setShowAddModal(true);
+                setEditingProduct(null);
+                setMsg(null);
+              }}
+              className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-indigo-950/40"
+            >
+              <i className="fa-solid fa-plus"></i>
+              Thêm Mặt Hàng Mới
+            </button>
+          )}
           <button
             onClick={onRefresh}
             className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors flex items-center gap-1.5"
@@ -498,13 +500,15 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh }) {
               <th className="py-3 px-3 bg-violet-950/30 text-violet-300 text-center border-l border-slate-700">
                 Kho TP.HCM (HCM)
               </th>
-              <th className="py-3 px-3 text-center border-l border-slate-700">Thao Tác</th>
+              {!readOnly && (
+                <th className="py-3 px-3 text-center border-l border-slate-700">Thao Tác</th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-700/60 font-sans">
             {filteredStock.length === 0 ? (
               <tr>
-                <td colSpan="10" className="py-8 text-center text-slate-500">
+                <td colSpan={readOnly ? 9 : 10} className="py-8 text-center text-slate-500">
                   {searchTerm ? 'Không tìm thấy mặt hàng nào phù hợp với từ khóa.' : 'Chưa có dữ liệu tồn kho snapshot.'}
                 </td>
               </tr>
@@ -557,26 +561,28 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh }) {
                         <span className="ml-1 text-xs text-amber-400">({hcm.reserved} khóa)</span>
                       )}
                     </td>
-                    <td className="py-3 px-3 text-center border-l border-slate-700">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => handleOpenEdit(p)}
-                          title="Chỉnh sửa thông tin mặt hàng"
-                          className="px-2 py-1 rounded bg-slate-700/60 hover:bg-amber-600/30 text-amber-300 text-xs transition-colors flex items-center gap-1"
-                        >
-                          <i className="fa-solid fa-pen-to-square"></i>
-                          <span>Sửa</span>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteProduct(p)}
-                          title="Xóa mặt hàng khỏi hệ thống"
-                          className="px-2 py-1 rounded bg-slate-700/60 hover:bg-red-600/30 text-red-300 text-xs transition-colors flex items-center gap-1"
-                        >
-                          <i className="fa-solid fa-trash-can"></i>
-                          <span>Xóa</span>
-                        </button>
-                      </div>
-                    </td>
+                    {!readOnly && (
+                      <td className="py-3 px-3 text-center border-l border-slate-700">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => handleOpenEdit(p)}
+                            title="Chỉnh sửa thông tin mặt hàng"
+                            className="px-2 py-1 rounded bg-slate-700/60 hover:bg-amber-600/30 text-amber-300 text-xs transition-colors flex items-center gap-1"
+                          >
+                            <i className="fa-solid fa-pen-to-square"></i>
+                            <span>Sửa</span>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteProduct(p)}
+                            title="Xóa mặt hàng khỏi hệ thống"
+                            className="px-2 py-1 rounded bg-slate-700/60 hover:bg-red-600/30 text-red-300 text-xs transition-colors flex items-center gap-1"
+                          >
+                            <i className="fa-solid fa-trash-can"></i>
+                            <span>Xóa</span>
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })
