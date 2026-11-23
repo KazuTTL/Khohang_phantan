@@ -5,9 +5,10 @@ from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import OutboxEvent, IncomingTransfer
+from ..models import OutboxEvent, IncomingTransfer, WarehouseTransaction, WarehouseTransactionDetail
 from ..services.stock_service import StockService
 from shared.event_schemas import TransferDecisionRequest
+from shared.auth import require_branch_manager_or_hq
 
 BRANCH_CODE = os.getenv("BRANCH_CODE", "HN")
 stock_service = StockService(BRANCH_CODE)
@@ -34,8 +35,46 @@ def list_incoming_transfers(db: Session = Depends(get_db)):
         })
     return results
 
+
+@router.get("/outgoing")
+def list_outgoing_transfers(db: Session = Depends(get_db)):
+    """Xem danh sách các kiện hàng xuất điều chuyển từ chi nhánh này đi kho khác"""
+    txs = (
+        db.query(WarehouseTransaction)
+        .filter(WarehouseTransaction.transaction_type == "CHUYEN_KHO_DI")
+        .order_by(WarehouseTransaction.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    details = db.query(WarehouseTransactionDetail).all()
+    detail_map = {}
+    for d in details:
+        detail_map.setdefault(d.transaction_id, []).append(d)
+
+    results = []
+    for t in txs:
+        d_list = detail_map.get(t.transaction_id, [])
+        first_d = d_list[0] if d_list else None
+        results.append({
+            "transfer_id": t.saga_transfer_id or t.transaction_id,
+            "receipt_code": t.receipt_code,
+            "source_branch": t.branch_code,
+            "dest_branch": t.counterpart_branch,
+            "sku": first_d.sku if first_d else "",
+            "quantity": abs(first_d.quantity) if first_d else 0,
+            "status": t.status,
+            "note": t.note,
+            "created_at": t.created_at.isoformat() if t.created_at else None
+        })
+    return results
+
+
 @router.post("/{transfer_id}/confirm")
-def confirm_transfer(transfer_id: str, db: Session = Depends(get_db)):
+def confirm_transfer(
+    transfer_id: str,
+    db: Session = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_branch_manager_or_hq)
+):
     """
     Chi nhánh đích xác nhận nhận hàng thành công:
     - Cập nhật trạng thái CSDL cục bộ (status = CONFIRMED)
@@ -79,7 +118,12 @@ def confirm_transfer(transfer_id: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=500, detail="Lỗi khi ghi nhận nhập kho điều chuyển.")
 
 @router.post("/{transfer_id}/reject")
-def reject_transfer(transfer_id: str, payload: TransferDecisionRequest = None, db: Session = Depends(get_db)):
+def reject_transfer(
+    transfer_id: str,
+    payload: TransferDecisionRequest = None,
+    db: Session = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_branch_manager_or_hq)
+):
     """
     Chi nhánh đích từ chối nhận hàng (Hàng hỏng, sai mã, kho đầy):
     - Cập nhật CSDL chi nhánh (status = REJECTED)
@@ -110,8 +154,12 @@ def reject_transfer(transfer_id: str, payload: TransferDecisionRequest = None, d
         }
     }
     outbox = OutboxEvent(
+        branch_code=BRANCH_CODE,
+        event_type="SAGA_STOCK_TRANSFER",
         routing_key="evt.transfer.rejected",
         payload=json.dumps(evt_payload, ensure_ascii=False),
+        delivery_status="PENDING",
+        retry_count=0,
         is_published=False
     )
     db.add(outbox)

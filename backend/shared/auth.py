@@ -160,3 +160,24 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
     if not user:
         raise HTTPException(status_code=401, detail="Token không hợp lệ hoặc đã hết hạn")
     return user
+
+
+def require_branch_manager_or_hq(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Chặn Thủ kho (BRANCH_STAFF) phê duyệt/từ chối Saga hoặc sửa định mức tồn kho"""
+    if user.get("role") == "BRANCH_STAFF":
+        raise HTTPException(
+            status_code=403,
+            detail="Thủ kho (BRANCH_STAFF) không có thẩm quyền phê duyệt/từ chối điều chuyển Saga hoặc thay đổi định mức kho. Chỉ Trưởng kho (BRANCH_MANAGER) mới được phép."
+        )
+    return user
+
+
+def require_hq_manager(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Chỉ cho phép Quản trị viên Trụ sở (HQ_MANAGER) thực hiện các lệnh điều phối & danh mục gốc"""
+    role = user.get("role")
+    if role not in ("HQ_MANAGER", "ANONYMOUS"):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ Quản trị viên Trụ sở chính (HQ_MANAGER) mới có quyền thực hiện thao tác này."
+        )
+    return user

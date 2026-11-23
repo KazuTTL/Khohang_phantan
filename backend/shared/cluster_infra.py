@@ -111,6 +111,45 @@ class LocalDBReplicator:
             "last_error": self.last_error or None
         }
 
+    def read_replica_preview(self, table_name: str, limit: int = 20) -> Dict[str, Any]:
+        """Đọc trực tiếp dữ liệu tồn kho từ DB Replica Dự phòng (Chế độ Read-Only Failover)"""
+        self.replicate_once()
+        if not os.path.exists(self.replica_db_path):
+            return {"status": "UNAVAILABLE", "rows": [], "replica_db": os.path.basename(self.replica_db_path)}
+        conn = None
+        try:
+            conn = sqlite3.connect(self.replica_db_path, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(f"SELECT * FROM {table_name} LIMIT ?", (limit,))
+            rows = [dict(r) for r in cur.fetchall()]
+            return {
+                "status": "OK",
+                "source": "DB_REPLICA_STANDBY",
+                "replica_db": os.path.basename(self.replica_db_path),
+                "last_replicated_at": self.last_replicated_at,
+                "row_count": len(rows),
+                "rows": rows
+            }
+        except Exception as e:
+            return {"status": "ERROR", "error": str(e), "rows": []}
+        finally:
+            if conn:
+                conn.close()
+
+
+_wan_state = {"online": True}
+
+
+def is_wan_online() -> bool:
+    return _wan_state["online"]
+
+
+def set_wan_online(online: bool) -> bool:
+    _wan_state["online"] = bool(online)
+    logger.warning(f"[WAN LINK] Trạng thái kết nối WAN tới Trung tâm đã chuyển sang: {'ONLINE' if online else 'OFFLINE (SIMULATED)'}")
+    return _wan_state["online"]
+
 
 def resolve_sqlite_paths(database_url: str, default_primary: str) -> tuple[str, str]:
     """Trích xuất đường dẫn file Primary DB và tạo đường dẫn file Replica DB tương ứng"""

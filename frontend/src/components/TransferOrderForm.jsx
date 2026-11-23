@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api/client';
 
-export default function TransferOrderForm({ products = [], onTransferCreated }) {
+export default function TransferOrderForm({ products = [], prefill = null, onTransferCreated }) {
   const [source, setSource] = useState('HN');
   const [dest, setDest] = useState('HCM');
   const [sku, setSku] = useState('');
@@ -10,17 +10,24 @@ export default function TransferOrderForm({ products = [], onTransferCreated }) 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
-  // Tự động chọn sản phẩm đầu tiên khi danh sách sản phẩm thay đổi
+  useEffect(() => {
+    if (prefill) {
+      if (prefill.source) setSource(prefill.source);
+      if (prefill.dest) setDest(prefill.dest);
+      if (prefill.sku) setSku(prefill.sku);
+      if (prefill.quantity) setQuantity(prefill.quantity);
+    }
+  }, [prefill]);
+
   useEffect(() => {
     if (products && products.length > 0) {
-      if (!sku || !products.some(p => p.sku === sku)) {
+      if (!sku || !products.some((p) => p.sku === sku)) {
         setSku(products[0].sku);
       }
     }
   }, [products, sku]);
 
-  // Thông tin sản phẩm được chọn
-  const selectedProduct = products.find(p => p.sku === sku);
+  const selectedProduct = products.find((p) => p.sku === sku);
   const sourceAvail = selectedProduct?.branches?.[source]?.available ?? 0;
   const sourceReserved = selectedProduct?.branches?.[source]?.reserved ?? 0;
   const destAvail = selectedProduct?.branches?.[dest]?.available ?? 0;
@@ -28,13 +35,10 @@ export default function TransferOrderForm({ products = [], onTransferCreated }) 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (source === dest) {
-      alert('Kho nguồn và kho đích không được trùng nhau!');
+      alert('Kho nguồn và kho đích không được trùng nhau.');
       return;
     }
-    if (!sku) {
-      alert('Vui lòng chọn một sản phẩm cần điều chuyển!');
-      return;
-    }
+    if (!sku) return;
     setLoading(true);
     setResult(null);
 
@@ -42,7 +46,7 @@ export default function TransferOrderForm({ products = [], onTransferCreated }) 
       const res = await api.createTransfer({
         source_branch: source,
         dest_branch: dest,
-        sku: sku,
+        sku,
         quantity: parseInt(quantity, 10)
       });
       setResult({ type: 'success', data: res });
@@ -55,63 +59,62 @@ export default function TransferOrderForm({ products = [], onTransferCreated }) 
   };
 
   return (
-    <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-5 shadow-lg">
-      <div className="flex items-center gap-2 mb-3">
-        <i className="fa-solid fa-dolly text-indigo-400 text-lg"></i>
-        <h3 className="text-base font-bold text-white">
-          Tạo Lệnh Điều Chuyển Kho Liên Chi Nhánh (Saga Orchestration)
-        </h3>
+    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+      <div className="flex items-center gap-2.5 mb-2">
+        <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+          <i className="fa-solid fa-dolly text-sm"></i>
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-slate-900">Phát Lệnh Điều Chuyển Liên Chi Nhánh</h3>
+          <p className="text-[11px] text-slate-500">Điều phối bất đồng bộ qua RabbitMQ & Saga Pattern</p>
+        </div>
       </div>
-      <p className="text-xs text-slate-400 mb-4">
-        Lệnh được Trụ sở chính (HQ - Cổng 8000) điều phối qua Message Broker (RabbitMQ), thực hiện khóa tạm tại kho xuất và bảo đảm tính nhất quán cuối cùng.
-      </p>
 
       {result && (
-        <div className={`p-3 rounded-lg text-xs mb-4 ${
-          result.type === 'success' 
-            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30' 
-            : 'bg-red-950/40 text-red-300 border border-red-500/30'
+        <div className={`p-3 rounded-lg text-xs my-3 border ${
+          result.type === 'success'
+            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+            : 'bg-rose-50 text-rose-800 border-rose-200'
         }`}>
           {result.type === 'success' ? (
             <div>
-              <p className="font-semibold text-emerald-200">
-                <i className="fa-solid fa-circle-check mr-1.5"></i>
-                Khởi tạo Saga thành công!
+              <p className="font-semibold flex items-center gap-1.5">
+                <i className="fa-solid fa-circle-check text-emerald-600"></i>
+                Đã khởi tạo lệnh điều chuyển Saga thành công!
               </p>
-              <p className="mt-1 font-mono text-[11px] text-slate-300">
-                Mã: {result.data.transfer_id} | Trạng thái: <span className="text-amber-300 font-bold">{result.data.saga_status}</span>
+              <p className="mt-1 font-mono text-[11px] text-slate-600">
+                Mã: {result.data.transfer_id.slice(0, 8)}... | Trạng thái: <span className="font-bold text-amber-700">{result.data.saga_status}</span>
               </p>
             </div>
           ) : (
-            <p><i className="fa-solid fa-triangle-exclamation mr-1.5"></i> {result.message}</p>
+            <p><i className="fa-solid fa-triangle-exclamation mr-1.5"></i>{result.message}</p>
           )}
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+      <form onSubmit={handleSubmit} className="space-y-3.5 text-xs mt-4">
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block font-medium text-slate-400 mb-1">Kho Nguồn (Xuất)</label>
+            <label className="block font-semibold text-slate-700 mb-1">Kho Nguồn (Xuất)</label>
             <select
               value={source}
-              onChange={e => {
-                const newSource = e.target.value;
-                setSource(newSource);
-                if (newSource === dest) setDest(newSource === 'HN' ? 'HCM' : 'HN');
+              onChange={(e) => {
+                const newSrc = e.target.value;
+                setSource(newSrc);
+                if (newSrc === dest) setDest(newSrc === 'HN' ? 'HCM' : 'HN');
               }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
             >
               <option value="HN">Chi nhánh Hà Nội (HN)</option>
               <option value="HCM">Chi nhánh TP.HCM (HCM)</option>
             </select>
           </div>
-
           <div>
-            <label className="block font-medium text-slate-400 mb-1">Kho Đích (Nhập)</label>
+            <label className="block font-semibold text-slate-700 mb-1">Kho Đích (Nhập)</label>
             <select
               value={dest}
-              onChange={e => setDest(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+              onChange={(e) => setDest(e.target.value)}
+              className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
             >
               <option value="HCM">Chi nhánh TP.HCM (HCM)</option>
               <option value="HN">Chi nhánh Hà Nội (HN)</option>
@@ -119,86 +122,82 @@ export default function TransferOrderForm({ products = [], onTransferCreated }) 
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block font-medium text-slate-400 mb-1">
-              Sản Phẩm (SKU) ({products.length} mặt hàng)
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="sm:col-span-2">
+            <label className="block font-semibold text-slate-700 mb-1">
+              Mặt hàng ({products.length} SKU)
             </label>
             <select
               value={sku}
-              onChange={e => setSku(e.target.value)}
+              onChange={(e) => setSku(e.target.value)}
               required
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+              className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
             >
-              {products && products.length > 0 ? (
-                products.map(p => {
+              {products.length > 0 ? (
+                products.map((p) => {
                   const pAvail = p.branches?.[source]?.available ?? 0;
                   return (
                     <option key={p.sku} value={p.sku}>
-                      {p.sku} - {p.product_name} (Tồn {source}: {pAvail} {p.unit || 'cái'})
+                      {p.sku} - {p.product_name} (Tồn {source}: {pAvail})
                     </option>
                   );
                 })
               ) : (
-                <option value="">-- Đang nạp danh mục --</option>
+                <option value="">-- Đang tải danh mục --</option>
               )}
             </select>
           </div>
 
           <div>
-            <label className="block font-medium text-slate-400 mb-1">Số Lượng Chuyển</label>
+            <label className="block font-semibold text-slate-700 mb-1">Số lượng</label>
             <input
               type="number"
               min="1"
               value={quantity}
-              onChange={e => setQuantity(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+              onChange={(e) => setQuantity(e.target.value)}
+              className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-bold tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
               required
             />
           </div>
         </div>
 
-        {/* Live Stock Status Preview */}
         {selectedProduct && (
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">
-                Tồn khả dụng kho nguồn <strong className="text-indigo-300">[{source}]</strong>:
-              </span>
-              <span className={`font-mono font-bold ${sourceAvail >= quantity ? 'text-emerald-400' : 'text-amber-400'}`}>
-                {sourceAvail} {selectedProduct.unit || 'cái'}
+          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div>
+              <span className="text-slate-500">Khả dụng tại <strong className="text-indigo-700">{source}</strong>: </span>
+              <span className={`font-mono font-bold ${sourceAvail >= quantity ? 'text-emerald-700' : 'text-amber-700'}`}>
+                {sourceAvail} {selectedProduct.unit}
               </span>
               {sourceReserved > 0 && (
-                <span className="text-amber-400/80 text-[10px]">
-                  (Tạm khóa: {sourceReserved})
-                </span>
+                <span className="ml-1.5 text-amber-600">(Tạm giữ: {sourceReserved})</span>
               )}
             </div>
-            <div className="text-slate-400">
-              Tồn kho đích <strong className="text-violet-300">[{dest}]</strong>: <span className="font-mono text-slate-200 font-bold">{destAvail} {selectedProduct.unit || 'cái'}</span>
+            <div>
+              <span className="text-slate-500">Tồn tại <strong className="text-violet-700">{dest}</strong>: </span>
+              <span className="font-mono font-bold text-slate-800">{destAvail} {selectedProduct.unit}</span>
             </div>
           </div>
         )}
 
         {selectedProduct && sourceAvail < parseInt(quantity, 10) && (
-          <p className="text-[11px] text-amber-400 flex items-center gap-1.5 bg-amber-950/30 p-2 rounded-lg border border-amber-500/30">
-            <i className="fa-solid fa-triangle-exclamation"></i>
-            <span>Cảnh báo: Số lượng chuyển ({quantity}) vượt quá tồn khả dụng ({sourceAvail}) tại kho xuất {source}. Saga có thể bị từ chối nếu không đủ tồn.</span>
-          </p>
+          <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-1.5">
+            <i className="fa-solid fa-triangle-exclamation text-amber-600"></i>
+            <span>Số lượng chuyển ({quantity}) lớn hơn tồn khả dụng ({sourceAvail}) tại {source}.</span>
+          </div>
         )}
 
         <button
           type="submit"
           disabled={loading || !sku}
-          className="w-full py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-md shadow-indigo-950/40 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+          className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs shadow-xs transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
         >
           {loading ? (
             <>
-              <i className="fa-solid fa-spinner animate-spin"></i> Đang phát lệnh điều phối Saga...
+              <i className="fa-solid fa-spinner animate-spin"></i> Đang khởi tạo Saga...
             </>
           ) : (
             <>
-              <i className="fa-solid fa-paper-plane"></i> Phát Lệnh Chuyển Kho (Start Saga)
+              <i className="fa-solid fa-paper-plane"></i> Phát Lệnh Điều Chuyển (Start Saga)
             </>
           )}
         </button>

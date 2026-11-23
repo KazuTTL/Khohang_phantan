@@ -148,3 +148,15 @@ class CustomerOrderCreate(BaseModel):
     customer_name: str
     customer_phone: Optional[str] = None
     items: List[OrderItemCreate] = Field(min_length=1, description="Danh sách sản phẩm trong đơn hàng")
+
+
+class TransferPullRequestCreate(BaseModel):
+    requesting_branch: str
+    suggested_source_branch: Optional[str] = None
+    sku: str
+    quantity: int = Field(gt=0)
+    reason: Optional[str] = "Chi nhánh sắp hết hàng tồn, đề nghị điều chuyển bổ sung"
+
+
+class WanToggleRequest(BaseModel):
+    online: bool

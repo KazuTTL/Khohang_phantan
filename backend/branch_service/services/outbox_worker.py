@@ -2,7 +2,7 @@
 """
 Outbox Worker: Đảm bảo giao tiếp phân tán tin cậy (Reliable Messaging)
 Quét định kỳ các thông điệp chưa gửi trong bảng Outbox_Events (SU_KIEN_DONG_BO) để phát lên RabbitMQ.
-Giải quyết bài toán: Mạng gián đoạn hoặc RabbitMQ restart đột ngột không làm mất thông điệp.
+Hỗ trợ kiểm chứng thực tế tình huống đứt cáp WAN (WAN Disconnect Simulation).
 """
 import json
 import asyncio
@@ -10,11 +10,12 @@ import logging
 from ..database import SessionLocal
 from ..models import OutboxEvent
 from shared.rabbitmq_client import get_broker
+from shared.cluster_infra import is_wan_online
 
 logger = logging.getLogger("OutboxWorker")
 
 
-async def run_outbox_worker(interval_seconds: float = 2.0):
+async def run_outbox_worker(interval_seconds: float = 1.0):
     broker = get_broker()
     logger.info("[OUTBOX WORKER] Đã khởi động tiến trình quét Outbox...")
 
@@ -30,27 +31,34 @@ async def run_outbox_worker(interval_seconds: float = 2.0):
                     .all()
                 )
 
-                for evt in pending_events:
-                    try:
-                        evt.delivery_status = "PROCESSING"
-                        payload_data = json.loads(evt.payload)
-                        success = await broker.publish(evt.routing_key, payload_data)
-                        if success:
-                            evt.is_published = True
-                            evt.delivery_status = "COMPLETED"
-                            db.commit()
-                            logger.info(f"[OUTBOX] Đã phát thành công Event {evt.event_id} -> Key: {evt.routing_key}")
-                        else:
+                if pending_events and not is_wan_online():
+                    for evt in pending_events:
+                        evt.retry_count += 1
+                        evt.delivery_status = "FAILED"
+                    db.commit()
+                    logger.warning(f"[OUTBOX] Mạng WAN đang ngắt! Giữ lại {len(pending_events)} sự kiện trong hàng đợi.")
+                else:
+                    for evt in pending_events:
+                        try:
+                            evt.delivery_status = "PROCESSING"
+                            payload_data = json.loads(evt.payload)
+                            success = await broker.publish(evt.routing_key, payload_data)
+                            if success:
+                                evt.is_published = True
+                                evt.delivery_status = "COMPLETED"
+                                db.commit()
+                                logger.info(f"[OUTBOX] Đã phát thành công Event {evt.event_id} -> Key: {evt.routing_key}")
+                            else:
+                                evt.retry_count += 1
+                                evt.delivery_status = "FAILED"
+                                db.commit()
+                                break
+                        except Exception as err:
                             evt.retry_count += 1
                             evt.delivery_status = "FAILED"
                             db.commit()
+                            logger.error(f"[OUTBOX] Lỗi khi phát Event {evt.event_id} (lần {evt.retry_count}): {err}")
                             break
-                    except Exception as err:
-                        evt.retry_count += 1
-                        evt.delivery_status = "FAILED"
-                        db.commit()
-                        logger.error(f"[OUTBOX] Lỗi khi phát Event {evt.event_id} (lần {evt.retry_count}): {err}")
-                        break
             finally:
                 db.close()
 

@@ -74,3 +74,20 @@ class TransferOrder(Base):
     error_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TransferRequest(Base):
+    """Bảng Yêu cầu Xin điều chuyển hàng từ Chi nhánh gửi lên Trụ sở (Pull Transfer Request)"""
+    __tablename__ = "Transfer_Requests"
+    request_id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    requesting_branch = Column(String(20), nullable=False)
+    suggested_source_branch = Column(String(20), nullable=False)
+    sku = Column(String(50), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    reason = Column(String(500), nullable=True)
+    requested_by = Column(String(64), default="branch_user")
+    # PENDING | APPROVED | REJECTED
+    status = Column(String(20), default="PENDING", nullable=False)
+    transfer_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

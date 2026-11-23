@@ -18,6 +18,7 @@ from shared.cluster_infra import (
     LocalDBReplicator,
     resolve_sqlite_paths,
     register_lb_middleware,
+    is_wan_online,
 )
 
 BRANCH_CODE = os.getenv("BRANCH_CODE", "HN")
@@ -183,6 +184,12 @@ def cluster_status():
     }
 
 
+@app.get("/api/v1/replica/preview")
+def branch_replica_preview():
+    """Đọc dữ liệu tồn kho trực tiếp từ DB Replica Dự phòng của Chi nhánh"""
+    return db_replicator.read_replica_preview("Local_Inventory", limit=30)
+
+
 @app.get("/health")
 def health_check():
     return {
@@ -195,5 +202,6 @@ def health_check():
         "load_balancer": site_lb.lb_name,
         "app_instances": site_lb.instances,
         "replica_healthy": db_replicator.is_healthy,
+        "wan_online": is_wan_online(),
         "broker_connected": get_broker().is_connected
     }

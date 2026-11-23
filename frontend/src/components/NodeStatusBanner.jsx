@@ -3,55 +3,74 @@ import React from 'react';
 
 export default function NodeStatusBanner({ nodesStatus }) {
   const nodes = [
-    { id: 'hq', name: 'Node Trụ sở chính (HQ)', port: 8000, role: 'Saga Coordinator / Master DB', online: nodesStatus.hq },
-    { id: 'hn', name: 'Chi nhánh Hà Nội (HN)', port: 8001, role: 'Branch Node 1 / DB_Branch_HN', online: nodesStatus.hn },
-    { id: 'hcm', name: 'Chi nhánh TP.HCM (HCM)', port: 8002, role: 'Branch Node 2 / DB_Branch_HCM', online: nodesStatus.hcm },
+    {
+      id: 'hq',
+      name: 'Site 1: Trụ sở chính (HQ)',
+      port: 8000,
+      role: 'LB-HQ-Central -> Central-API-1/2',
+      db: 'DB_HQ (Primary + Replica)',
+      online: nodesStatus.hq,
+      icon: 'fa-building-columns',
+      color: 'indigo',
+    },
+    {
+      id: 'hn',
+      name: 'Site 2: Kho Hà Nội (HN)',
+      port: 8001,
+      role: 'LB-HN-North -> Local-App-1/2 HN',
+      db: 'TON_KHO_HN (Primary + Replica)',
+      online: nodesStatus.hn,
+      icon: 'fa-warehouse',
+      color: 'sky',
+    },
+    {
+      id: 'hcm',
+      name: 'Site 3: Kho TP.HCM (HCM)',
+      port: 8002,
+      role: 'LB-HCM-South -> Local-App-1/2 HCM',
+      db: 'TON_KHO_HCM (Primary + Replica)',
+      online: nodesStatus.hcm,
+      icon: 'fa-warehouse',
+      color: 'violet',
+    },
   ];
 
   return (
-    <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-4 mb-6 shadow-lg backdrop-blur">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold tracking-wider text-slate-400 uppercase flex items-center gap-2">
-          <i className="fa-solid fa-network-wired text-indigo-400"></i>
-          Trạng thái Cụm Hệ thống Phân tán (Multi-Node Cluster)
-        </h2>
-        <span className="text-xs px-2.5 py-1 rounded-full bg-slate-700/60 text-slate-300">
-          Tự động cập nhật mỗi 3s
-        </span>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {nodes.map(n => (
-          <div 
-            key={n.id} 
-            className={`flex items-center justify-between p-3.5 rounded-lg border transition-all ${
-              n.online 
-                ? 'bg-slate-900/60 border-emerald-500/40 shadow-emerald-950/20 shadow-md' 
-                : 'bg-red-950/20 border-red-500/30'
-            }`}
-          >
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${n.online ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`}></span>
-                <span className="font-semibold text-slate-200 text-sm">{n.name}</span>
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {nodes.map((n) => (
+        <div
+          key={n.id}
+          className={`p-4 rounded-xl border bg-white shadow-xs transition-all ${
+            n.online ? 'border-slate-200' : 'border-rose-200 bg-rose-50/40'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                n.online ? 'bg-indigo-50 text-indigo-600' : 'bg-rose-100 text-rose-600'
+              }`}>
+                <i className={`fa-solid ${n.icon} text-sm`}></i>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">{n.role}</p>
-            </div>
-            <div className="text-right">
-              <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                :{n.port}
-              </span>
-              <div className="mt-1">
-                {n.online ? (
-                  <span className="text-xs font-medium text-emerald-400">ONLINE</span>
-                ) : (
-                  <span className="text-xs font-medium text-red-400">DISCONNECTED</span>
-                )}
+              <div className="min-w-0">
+                <h3 className="text-xs font-bold text-slate-900 truncate">{n.name}</h3>
+                <p className="text-[11px] text-slate-500 font-mono truncate">{n.role}</p>
               </div>
             </div>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 shrink-0 border ${
+              n.online
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-rose-50 text-rose-700 border-rose-200'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
+              {n.online ? 'ONLINE' : 'OFFLINE'}
+            </span>
           </div>
-        ))}
-      </div>
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+            <span className="font-mono truncate">{n.db}</span>
+            <span className="font-mono font-semibold text-slate-700">:{n.port}</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

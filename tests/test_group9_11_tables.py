@@ -171,6 +171,79 @@ def run_test():
         assert g_item["branches"]["HCM"]["available"] == 15
         print(" -> Outbox COMPLETED & TONG_HOP_TON_KHO tại HQ đồng bộ chính xác (HN=24, HCM=15)!")
 
+        # ------------------------------------------------------------------
+        # BƯỚC 6: KIỂM THỬ CÁC TÍNH NĂNG PHÂN TÁN NÂNG CAO (NHÓM 2)
+        # ------------------------------------------------------------------
+        print("\n[Bước 6] Kiểm thử WAN Disconnect Toggle, Replica Preview, Strict RBAC & Pull Transfer...")
+
+        # 6A. Live WAN Disconnect Toggle
+        assert client.post(f"{HN_BASE}/api/v1/network/wan-toggle", json={"online": False}).json()["wan_online"] is False
+        r_ord_off = client.post(f"{HN_BASE}/api/v1/orders", json={
+            "customer_name": f"Khách Offline WAN {test_id}",
+            "items": [{"sku": sku, "quantity": 4}]
+        })
+        assert r_ord_off.status_code == 201
+        time.sleep(2.5)
+        r_outbox_off = client.get(f"{HN_BASE}/api/v1/outbox").json()
+        assert any(e["delivery_status"] == "FAILED" and e["retry_count"] >= 1 for e in r_outbox_off), "Outbox phải giữ lại với trạng thái FAILED khi đứt WAN!"
+        # Khôi phục WAN -> Outbox tự động đồng bộ Eventual Consistency
+        assert client.post(f"{HN_BASE}/api/v1/network/wan-toggle", json={"online": True}).json()["wan_online"] is True
+        time.sleep(3.0)
+        g_after_wan = next(x for x in client.get(f"{HQ_BASE}/api/v1/inventory/global").json() if x["sku"] == sku)
+        assert g_after_wan["branches"]["HN"]["available"] == 20, f"Kỳ vọng 20 sau khôi phục WAN, thực tế: {g_after_wan['branches']['HN']['available']}"
+        print(" -> [6A] Live WAN Disconnect -> Outbox giữ sự kiện (FAILED) -> Khôi phục WAN -> Đồng bộ về 20 [OK]")
+
+        # 6B. Đọc trực tiếp từ DB Replica Dự phòng
+        rep_hq = client.get(f"{HQ_BASE}/api/v1/replica/preview").json()
+        rep_hn = client.get(f"{HN_BASE}/api/v1/replica/preview").json()
+        assert rep_hq["status"] == "OK" and rep_hq["source"] == "DB_REPLICA_STANDBY" and rep_hq["row_count"] > 0
+        assert rep_hn["status"] == "OK" and rep_hn["source"] == "DB_REPLICA_STANDBY" and rep_hn["row_count"] > 0
+        print(f" -> [6B] Đọc thành công DB Replica dự phòng: HQ ({rep_hq['row_count']} dòng), HN ({rep_hn['row_count']} dòng) [OK]")
+
+        # 6C. Strict RBAC (BRANCH_STAFF bị chặn sửa ngưỡng/duyệt điều chuyển; BRANCH_MANAGER bị chặn API HQ)
+        staff_token = client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": "staff_hn", "password": "staff123"}).json()["access_token"]
+        mgr_token = client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": "manager_hn", "password": "hn123"}).json()["access_token"]
+        r_staff_block = client.put(
+            f"{HN_BASE}/api/v1/inventory/{sku}/thresholds",
+            json={"min_threshold": 5, "max_threshold": 100},
+            headers={"Authorization": f"Bearer {staff_token}"}
+        )
+        assert r_staff_block.status_code == 403, f"Kỳ vọng 403 cho Thủ kho, nhận {r_staff_block.status_code}"
+        r_mgr_hq_block = client.post(
+            f"{HQ_BASE}/api/v1/categories",
+            json={"category_name": "Blocked Cat"},
+            headers={"Authorization": f"Bearer {mgr_token}"}
+        )
+        assert r_mgr_hq_block.status_code == 403, f"Kỳ vọng 403 khi Manager chi nhánh gọi API HQ, nhận {r_mgr_hq_block.status_code}"
+        print(" -> [6C] Strict RBAC (Chặn Thủ kho 403 & Chặn chi nhánh gọi API HQ 403) [OK]")
+
+        # 6D. Pull Transfer Request (HCM xin hàng từ HN -> HQ duyệt -> Saga chạy -> HN thấy Outgoing Transfers)
+        r_pull = client.post(f"{HQ_BASE}/api/v1/transfer-requests", json={
+            "requesting_branch": "HCM",
+            "suggested_source_branch": "HN",
+            "sku": sku,
+            "quantity": 5,
+            "reason": "Bổ sung kệ HCM"
+        })
+        assert r_pull.status_code == 201
+        req_id = r_pull.json()["request_id"]
+        r_app = client.post(f"{HQ_BASE}/api/v1/transfer-requests/{req_id}/approve")
+        assert r_app.status_code == 200
+        t_id = r_app.json()["transfer_id"]
+        outgoing_hn = []
+        incoming_hcm = []
+        for _ in range(20):
+            time.sleep(0.5)
+            outgoing_hn = client.get(f"{HN_BASE}/api/v1/transfers/outgoing").json()
+            incoming_hcm = client.get(f"{HCM_BASE}/api/v1/transfers/incoming").json()
+            if any(o["transfer_id"] == t_id for o in outgoing_hn) and any(i["transfer_id"] == t_id for i in incoming_hcm):
+                break
+        assert any(o["transfer_id"] == t_id for o in outgoing_hn), "Không thấy kiện hàng xuất đi tại HN!"
+        assert any(i["transfer_id"] == t_id for i in incoming_hcm), "Không thấy kiện hàng chờ nhập tại HCM!"
+        assert client.post(f"{HCM_BASE}/api/v1/transfers/{t_id}/confirm").status_code == 200
+        time.sleep(2.0)
+        print(f" -> [6D] Pull Transfer Request -> HQ Duyệt -> Outgoing HN ghi nhận -> HCM Duyệt nhận thành công [OK]")
+
         # Kiểm tra schema overview đủ 11 bảng
         hq_schema = client.get(f"{HQ_BASE}/api/v1/schema-overview").json()
         hn_schema = client.get(f"{HN_BASE}/api/v1/schema-overview").json()

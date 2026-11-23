@@ -1,5 +1,6 @@
 // frontend/src/pages/LoginPage.jsx
 import React, { useState } from 'react';
+import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from '../components/Router';
 
@@ -9,6 +10,7 @@ export default function LoginPage() {
 
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('admin123');
+  const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -25,171 +27,227 @@ export default function LoginPage() {
   };
 
   const handleSubmit = async (e) => {
-    if (e) e.preventDefault();
+    e.preventDefault();
     setLoading(true);
     setErrorMsg(null);
     try {
-      const user = await login(username.trim(), password);
-      routeByRole(user);
+      const res = await api.login({ username: username.trim(), password });
+      login(res.access_token, res.user);
+      routeByRole(res.user);
     } catch (err) {
-      setErrorMsg(err.message || 'Đăng nhập thất bại. Vui lòng kiểm tra lại tài khoản hoặc mật khẩu.');
+      setErrorMsg(err.message || 'Tên đăng nhập hoặc mật khẩu không đúng.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleQuickLogin = (u, p) => {
+  const handleQuickLogin = async (u, p) => {
     setUsername(u);
     setPassword(p);
-    setErrorMsg(null);
-    // Tự động kích hoạt đăng nhập
     setLoading(true);
-    login(u, p)
-      .then(user => {
-        routeByRole(user);
-      })
-      .catch(err => {
-        setErrorMsg(err.message || 'Lỗi đăng nhập nhanh.');
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    setErrorMsg(null);
+    try {
+      const res = await api.login({ username: u, password: p });
+      login(res.access_token, res.user);
+      routeByRole(res.user);
+    } catch (err) {
+      setErrorMsg(err.message || 'Lỗi kết nối máy chủ xác thực.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-4 font-sans text-slate-100">
-      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 backdrop-blur-sm">
-        {/* Logo & Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-900/50">
-            <i className="fa-solid fa-warehouse text-white text-xl"></i>
-          </div>
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl shadow-slate-200/70 border border-slate-200 overflow-hidden grid grid-cols-1 md:grid-cols-12">
+        {/* Left Feature Panel */}
+        <div className="md:col-span-5 bg-gradient-to-br from-indigo-600 via-indigo-700 to-slate-900 p-8 text-white flex flex-col justify-between">
           <div>
-            <h1 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
-              DISTRIBUTED WMS
-            </h1>
-            <p className="text-xs text-slate-400">
-              Hệ thống Quản lý Kho hàng Phân tán Đa Chi nhánh
+            <div className="flex items-center gap-3 mb-8">
+              <div className="w-10 h-10 rounded-xl bg-white/15 border border-white/25 flex items-center justify-center">
+                <i className="fa-solid fa-boxes-stacked text-lg"></i>
+              </div>
+              <div>
+                <div className="text-base font-extrabold tracking-tight">DISTRIBUTED WMS</div>
+                <div className="text-[11px] text-indigo-200">Enterprise Inventory Suite</div>
+              </div>
+            </div>
+
+            <h2 className="text-2xl font-bold leading-snug mb-3">
+              Hệ thống Quản lý Kho hàng Đa Chi nhánh
+            </h2>
+            <p className="text-xs text-indigo-100/90 leading-relaxed mb-6">
+              Điều phối tồn kho tập trung tại Trụ sở chính kết hợp vận hành tự trị cục bộ tại từng chi nhánh Hà Nội và TP.HCM.
             </p>
+
+            <div className="space-y-3 text-xs">
+              <div className="flex items-start gap-2.5 bg-white/10 rounded-xl p-3 border border-white/10">
+                <i className="fa-solid fa-building-columns mt-0.5 text-indigo-200"></i>
+                <div>
+                  <div className="font-semibold">Site 1: Trụ sở chính (HQ)</div>
+                  <div className="text-[11px] text-indigo-100/80">Danh mục gốc, Điều phối Saga, Báo cáo tổng hợp</div>
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5 bg-white/10 rounded-xl p-3 border border-white/10">
+                <i className="fa-solid fa-warehouse mt-0.5 text-sky-200"></i>
+                <div>
+                  <div className="font-semibold">Site 2 & 3: Chi nhánh HN / HCM</div>
+                  <div className="text-[11px] text-indigo-100/80">Đơn hàng, Phiếu kho, Kiểm kê & Outbox tự trị</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-8 pt-4 border-t border-white/15 text-[11px] text-indigo-200">
+            Xác thực từ bảng TAI_KHOAN cục bộ tại từng Site
           </div>
         </div>
 
-        {/* Error Alert */}
-        {errorMsg && (
-          <div className="mb-4 p-3 rounded-lg bg-red-950/70 border border-red-500/40 text-red-300 text-xs flex items-center gap-2">
-            <i className="fa-solid fa-circle-exclamation text-red-400 text-sm"></i>
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          <div>
-            <label className="block text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
-              <i className="fa-solid fa-user text-slate-400"></i>
-              Tên tài khoản
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="VD: admin, manager_hn, manager_hcm..."
-              required
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-            />
+        {/* Right Login Form */}
+        <div className="md:col-span-7 p-6 sm:p-8 flex flex-col justify-center">
+          <div className="mb-6">
+            <h1 className="text-xl font-bold text-slate-900">Đăng nhập Hệ thống</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Sử dụng tài khoản được cấp cho Trụ sở chính hoặc Chi nhánh của bạn
+            </p>
           </div>
 
-          <div>
-            <label className="block text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
-              <i className="fa-solid fa-lock text-slate-400"></i>
-              Mật khẩu
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="Nhập mật khẩu..."
-              required
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-indigo-500 transition-colors"
-            />
-          </div>
+          {errorMsg && (
+            <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+              <i className="fa-solid fa-circle-exclamation text-rose-500"></i>
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold text-xs shadow-lg shadow-indigo-950/60 transition-all flex items-center justify-center gap-2 disabled:opacity-50 mt-2"
-          >
-            {loading ? (
-              <>
-                <i className="fa-solid fa-spinner animate-spin"></i>
-                <span>Đang xác thực...</span>
-              </>
-            ) : (
-              <>
-                <i className="fa-solid fa-right-to-bracket"></i>
-                <span>Đăng Nhập Hệ Thống</span>
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Quick Demo Login Badges */}
-        <div className="mt-6 pt-5 border-t border-slate-800/80">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('admin', 'admin123')}
-              className="p-2.5 rounded-lg bg-slate-800/70 hover:bg-indigo-600/20 border border-slate-700 hover:border-indigo-500/50 text-left transition-all group"
-            >
-              <div className="font-bold text-indigo-300 group-hover:text-indigo-200 flex items-center gap-1">
-                <i className="fa-solid fa-building-columns text-[10px]"></i>
-                Trụ sở chính HQ
+          <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1.5">Tên tài khoản</label>
+              <div className="relative">
+                <i className="fa-solid fa-user absolute left-3.5 top-3 text-slate-400"></i>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Nhập tên tài khoản..."
+                  required
+                  className="w-full bg-white border border-slate-300 rounded-xl pl-10 pr-3.5 py-2.5 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all"
+                />
               </div>
-              <div className="text-slate-400 font-mono text-[10px]">admin / admin123</div>
-            </button>
+            </div>
+
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1.5">Mật khẩu</label>
+              <div className="relative">
+                <i className="fa-solid fa-lock absolute left-3.5 top-3 text-slate-400"></i>
+                <input
+                  type={showPass ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Nhập mật khẩu..."
+                  required
+                  className="w-full bg-white border border-slate-300 rounded-xl pl-10 pr-10 py-2.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPass(!showPass)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                >
+                  <i className={`fa-solid ${showPass ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                </button>
+              </div>
+            </div>
 
             <button
-              type="button"
-              onClick={() => handleQuickLogin('manager_hn', 'hn123')}
-              className="p-2.5 rounded-lg bg-slate-800/70 hover:bg-blue-600/20 border border-slate-700 hover:border-blue-500/50 text-left transition-all group"
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              <div className="font-bold text-blue-300 group-hover:text-blue-200 flex items-center gap-1">
-                <i className="fa-solid fa-location-dot text-[10px]"></i>
-                Trưởng kho Hà Nội
-              </div>
-              <div className="text-slate-400 font-mono text-[10px]">manager_hn / hn123</div>
+              {loading ? (
+                <>
+                  <i className="fa-solid fa-spinner animate-spin"></i>
+                  <span>Đang xác thực...</span>
+                </>
+              ) : (
+                <>
+                  <i className="fa-solid fa-right-to-bracket"></i>
+                  <span>Đăng Nhập</span>
+                </>
+              )}
             </button>
+          </form>
 
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('manager_hcm', 'hcm123')}
-              className="p-2.5 rounded-lg bg-slate-800/70 hover:bg-violet-600/20 border border-slate-700 hover:border-violet-500/50 text-left transition-all group"
-            >
-              <div className="font-bold text-violet-300 group-hover:text-violet-200 flex items-center gap-1">
-                <i className="fa-solid fa-location-dot text-[10px]"></i>
-                Trưởng kho TP.HCM
-              </div>
-              <div className="text-slate-400 font-mono text-[10px]">manager_hcm / hcm123</div>
-            </button>
+          {/* 5 Accounts Quick Access */}
+          <div className="mt-6 pt-5 border-t border-slate-200">
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+              Chọn nhanh tài khoản theo chi nhánh
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('admin', 'admin123')}
+                className="p-2.5 rounded-xl bg-indigo-50/70 hover:bg-indigo-100/70 border border-indigo-200 text-left transition-colors"
+              >
+                <div className="font-bold text-indigo-700 flex items-center gap-1.5">
+                  <i className="fa-solid fa-building-columns text-[10px]"></i>
+                  Trụ sở chính HQ
+                </div>
+                <div className="text-slate-500 font-mono text-[10px] mt-0.5">admin / admin123</div>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('staff_hn', 'staff123')}
-              className="p-2.5 rounded-lg bg-slate-800/70 hover:bg-emerald-600/20 border border-slate-700 hover:border-emerald-500/50 text-left transition-all group"
-            >
-              <div className="font-bold text-emerald-300 group-hover:text-emerald-200 flex items-center gap-1">
-                <i className="fa-solid fa-clipboard-user text-[10px]"></i>
-                Thủ kho Hà Nội
-              </div>
-              <div className="text-slate-400 font-mono text-[10px]">staff_hn / staff123</div>
-            </button>
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('manager_hn', 'hn123')}
+                className="p-2.5 rounded-xl bg-sky-50/70 hover:bg-sky-100/70 border border-sky-200 text-left transition-colors"
+              >
+                <div className="font-bold text-sky-700 flex items-center gap-1.5">
+                  <i className="fa-solid fa-user-tie text-[10px]"></i>
+                  Trưởng kho Hà Nội
+                </div>
+                <div className="text-slate-500 font-mono text-[10px] mt-0.5">manager_hn / hn123</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('manager_hcm', 'hcm123')}
+                className="p-2.5 rounded-xl bg-violet-50/70 hover:bg-violet-100/70 border border-violet-200 text-left transition-colors"
+              >
+                <div className="font-bold text-violet-700 flex items-center gap-1.5">
+                  <i className="fa-solid fa-user-tie text-[10px]"></i>
+                  Trưởng kho TP.HCM
+                </div>
+                <div className="text-slate-500 font-mono text-[10px] mt-0.5">manager_hcm / hcm123</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('staff_hn', 'staff123')}
+                className="p-2.5 rounded-xl bg-emerald-50/70 hover:bg-emerald-100/70 border border-emerald-200 text-left transition-colors"
+              >
+                <div className="font-bold text-emerald-700 flex items-center gap-1.5">
+                  <i className="fa-solid fa-clipboard-user text-[10px]"></i>
+                  Thủ kho Hà Nội
+                </div>
+                <div className="text-slate-500 font-mono text-[10px] mt-0.5">staff_hn / staff123</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('staff_hcm', 'staff123')}
+                className="sm:col-span-2 p-2.5 rounded-xl bg-teal-50/70 hover:bg-teal-100/70 border border-teal-200 text-left transition-colors flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-bold text-teal-700 flex items-center gap-1.5">
+                    <i className="fa-solid fa-clipboard-user text-[10px]"></i>
+                    Thủ kho TP.HCM
+                  </div>
+                  <div className="text-slate-500 font-mono text-[10px] mt-0.5">staff_hcm / staff123</div>
+                </div>
+                <i className="fa-solid fa-arrow-right text-teal-500"></i>
+              </button>
+            </div>
           </div>
         </div>
       </div>
-
-      <footer className="mt-8 text-center text-xs text-slate-500">
-        Distributed Warehouse Management System • Kiến trúc Microservices: FastAPI + RabbitMQ + ReactJS
-      </footer>
     </div>
   );
 }

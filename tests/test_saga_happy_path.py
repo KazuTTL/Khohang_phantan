@@ -63,10 +63,16 @@ def run_test():
         assert hn_inv_mid[sku]["available_qty"] == hn_avail_pre - qty, "Lỗi: Available của kho nguồn chưa bị trừ!"
         assert hn_inv_mid[sku]["reserved_qty"] >= qty, "Lỗi: Reserved của kho nguồn chưa tăng!"
 
-        # 4. Kiểm tra kiện hàng đang chờ tại kho HCM
+        # 4. Kiểm tra kiện hàng đang chờ tại kho HCM (poll đến khi HQ gửi CMD_IMPORT_TRANSFER)
         print("\n[Bước 4] Kiểm tra danh sách hàng chờ nhập tại Kho đích TP.HCM...")
-        incoming = client.get(f"{HCM_URL}/transfers/incoming").json()
-        has_order = any(item["transfer_id"] == transfer_id for item in incoming)
+        incoming = []
+        has_order = False
+        for _ in range(16):
+            incoming = client.get(f"{HCM_URL}/transfers/incoming").json()
+            has_order = any(item["transfer_id"] == transfer_id for item in incoming)
+            if has_order:
+                break
+            time.sleep(0.5)
         print(f" -> Kiện hàng {transfer_id} đã xuất hiện tại danh sách chờ nhập kho HCM: {has_order}")
 
         # 5. Kho đích xác nhận nhận hàng

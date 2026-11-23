@@ -6,7 +6,7 @@ from ..database import get_db
 from ..models import Product, Branch, GlobalInventorySnapshot, ProductCategory, Account
 from shared.event_schemas import ProductCreate, ProductUpdate, CategoryCreate, AccountCreate
 from shared.rabbitmq_client import get_broker
-from shared.auth import hash_password
+from shared.auth import hash_password, require_hq_manager
 
 router = APIRouter(prefix="/products", tags=["HQ Catalog"])
 master_router = APIRouter(tags=["HQ Master Data (Categories & Accounts)"])
@@ -23,7 +23,7 @@ def list_categories(db: Session = Depends(get_db)):
 
 
 @master_router.post("/categories", status_code=201)
-async def create_category(payload: CategoryCreate, db: Session = Depends(get_db)):
+async def create_category(payload: CategoryCreate, db: Session = Depends(get_db), user: dict = Depends(require_hq_manager)):
     """Tạo danh mục sản phẩm mới tại HQ và nhân bản về các chi nhánh qua RabbitMQ"""
     existing = db.query(ProductCategory).filter(ProductCategory.category_name == payload.category_name).first()
     if existing:
@@ -70,7 +70,7 @@ def list_accounts(db: Session = Depends(get_db)):
 
 
 @master_router.post("/accounts", status_code=201)
-async def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
+async def create_account(payload: AccountCreate, db: Session = Depends(get_db), user: dict = Depends(require_hq_manager)):
     """Tạo tài khoản mới tại HQ (băm PBKDF2-SHA256) và đồng bộ về chi nhánh tương ứng"""
     existing = db.query(Account).filter(Account.username == payload.username).first()
     if existing:
@@ -126,7 +126,7 @@ def list_products(db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
-async def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
+async def create_product(payload: ProductCreate, db: Session = Depends(get_db), user: dict = Depends(require_hq_manager)):
     """Tạo sản phẩm mới và tự động phát tán đồng bộ tới toàn bộ chi nhánh kèm số lượng tồn đầu kỳ"""
     existing = db.query(Product).filter(Product.sku == payload.sku).first()
     if existing:
@@ -185,7 +185,7 @@ async def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{sku}")
-async def update_product(sku: str, payload: ProductUpdate, db: Session = Depends(get_db)):
+async def update_product(sku: str, payload: ProductUpdate, db: Session = Depends(get_db), user: dict = Depends(require_hq_manager)):
     """Cập nhật thông tin sản phẩm Master Data và phát tán đồng bộ chi nhánh"""
     prod = db.query(Product).filter(Product.sku == sku).first()
     if not prod:
@@ -245,7 +245,7 @@ async def update_product(sku: str, payload: ProductUpdate, db: Session = Depends
 
 
 @router.delete("/{sku}")
-async def delete_product(sku: str, db: Session = Depends(get_db)):
+async def delete_product(sku: str, db: Session = Depends(get_db), user: dict = Depends(require_hq_manager)):
     """Xóa sản phẩm Master Data (chỉ được xóa khi tồn kho toàn hệ thống bằng 0)"""
     prod = db.query(Product).filter(Product.sku == sku).first()
     if not prod:

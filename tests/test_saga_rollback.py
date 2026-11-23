@@ -52,6 +52,13 @@ def run_test():
         print(f"\n[Bước 3] Kho HN đã khóa tạm: Available = {hn_inv_mid[sku]['available_qty']} (Đã trừ {qty}), Reserved = {hn_inv_mid[sku]['reserved_qty']}")
         assert hn_inv_mid[sku]["available_qty"] == hn_avail_pre - qty
 
+        # Đợi kiện hàng xuất hiện tại danh sách chờ nhập kho HCM trước khi từ chối
+        for _ in range(16):
+            inc = client.get(f"{HCM_URL}/transfers/incoming").json()
+            if any(item["transfer_id"] == transfer_id for item in inc):
+                break
+            time.sleep(0.5)
+
         # 4. Kho đích TP.HCM từ chối nhận hàng (Giả lập sự cố kho đích)
         print(f"\n[Bước 4] Kho TP.HCM phát hiện lỗi hoặc kho quá tải -> Bấm TỪ CHỐI NHẬN HÀNG...")
         res_reject = client.post(f"{HCM_URL}/transfers/{transfer_id}/reject", json={

@@ -2,24 +2,29 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
 
-export default function GlobalStockTable({ globalStock, loading, onRefresh, readOnly = false }) {
+export default function GlobalStockTable({ globalStock, categories = [], loading, onRefresh, readOnly = false }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
 
   // Form Thêm mới
   const [sku, setSku] = useState('');
+  const [barcode, setBarcode] = useState('');
   const [name, setName] = useState('');
+  const [categoryId, setCategoryId] = useState(1);
   const [unit, setUnit] = useState('Chiếc');
+  const [costPrice, setCostPrice] = useState(12000000);
   const [price, setPrice] = useState(15000000);
-  const [category, setCategory] = useState('Điện tử');
   const [stockHN, setStockHN] = useState(50);
   const [stockHCM, setStockHCM] = useState(30);
   const [minThreshold, setMinThreshold] = useState(10);
   const [maxThreshold, setMaxThreshold] = useState(200);
 
   // Form Chỉnh sửa
+  const [editBarcode, setEditBarcode] = useState('');
   const [editName, setEditName] = useState('');
+  const [editCategoryId, setEditCategoryId] = useState(1);
   const [editUnit, setEditUnit] = useState('');
+  const [editCostPrice, setEditCostPrice] = useState(0);
   const [editPrice, setEditPrice] = useState(0);
   const [editMinTh, setEditMinTh] = useState(10);
   const [editMaxTh, setEditMaxTh] = useState(200);
@@ -29,7 +34,6 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
   // Search & Filter
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
-
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState(null);
 
@@ -37,13 +41,16 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
     e.preventDefault();
     setSubmitting(true);
     setMsg(null);
+    const cleanSku = sku.trim().toUpperCase();
     try {
       await api.createProduct({
-        sku: sku.trim().toUpperCase(),
+        sku: cleanSku,
+        barcode: barcode.trim() || `BC-${cleanSku}`,
         product_name: name.trim(),
+        category_id: parseInt(categoryId, 10) || 1,
         unit: unit.trim(),
+        cost_price: parseFloat(costPrice) || 0,
         price: parseFloat(price) || 0,
-        category,
         initial_stock: {
           HN: parseInt(stockHN, 10) || 0,
           HCM: parseInt(stockHCM, 10) || 0
@@ -53,15 +60,16 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
       });
       setMsg({
         type: 'success',
-        text: `Đã tạo SKU '${sku}', phân bổ tồn đầu kỳ (HN: ${stockHN}, HCM: ${stockHCM}) và phát tín hiệu đồng bộ qua RabbitMQ!`
+        text: `Đã tạo SKU '${cleanSku}' và đồng bộ danh mục + tồn đầu kỳ qua RabbitMQ!`
       });
       setSku('');
+      setBarcode('');
       setName('');
       if (onRefresh) onRefresh();
       setTimeout(() => {
         setShowAddModal(false);
         setMsg(null);
-      }, 1500);
+      }, 1200);
     } catch (err) {
       setMsg({ type: 'error', text: err.message || 'Lỗi khi tạo sản phẩm' });
     } finally {
@@ -71,8 +79,11 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
 
   const handleOpenEdit = (p) => {
     setEditingProduct(p);
+    setEditBarcode(p.barcode || `BC-${p.sku}`);
     setEditName(p.product_name);
+    setEditCategoryId(p.category_id || 1);
     setEditUnit(p.unit || 'Chiếc');
+    setEditCostPrice(p.cost_price || 0);
     setEditPrice(p.price || 0);
     setEditMinTh(10);
     setEditMaxTh(200);
@@ -88,8 +99,11 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
     setMsg(null);
     try {
       await api.updateProduct(editingProduct.sku, {
+        barcode: editBarcode.trim(),
         product_name: editName.trim(),
+        category_id: parseInt(editCategoryId, 10) || 1,
         unit: editUnit.trim(),
+        cost_price: parseFloat(editCostPrice) || 0,
         price: parseFloat(editPrice) || 0,
         min_threshold: parseInt(editMinTh, 10) || 10,
         max_threshold: parseInt(editMaxTh, 10) || 200,
@@ -100,7 +114,7 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
       });
       setMsg({
         type: 'success',
-        text: `Đã cập nhật sản phẩm '${editingProduct.sku}' và điều chỉnh tồn kho chi nhánh thành công!`
+        text: `Đã cập nhật '${editingProduct.sku}' và đồng bộ xuống các chi nhánh!`
       });
       if (onRefresh) onRefresh();
       setTimeout(() => {
@@ -117,527 +131,325 @@ export default function GlobalStockTable({ globalStock, loading, onRefresh, read
   const handleDeleteProduct = async (p) => {
     const totalQty = (p.total_available || 0) + (p.total_reserved || 0);
     if (totalQty > 0) {
-      alert(`Không thể xóa mặt hàng '${p.sku}' vì vẫn còn tồn kho (${totalQty} sản phẩm). Theo nguyên tắc toàn vẹn hệ thống phân tán, sản phẩm chỉ được xóa khi tồn kho ở tất cả chi nhánh bằng 0.`);
+      alert(`Không thể xóa '${p.sku}' vì vẫn còn tồn kho (${totalQty}). Chỉ xóa được khi tồn kho tại mọi chi nhánh bằng 0.`);
       return;
     }
+    if (!window.confirm(`Xác nhận xóa vĩnh viễn mặt hàng '${p.sku}' (${p.product_name})?`)) return;
 
-    if (!window.confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn mặt hàng '${p.sku}' (${p.product_name}) khỏi toàn bộ hệ thống?`)) {
-      return;
-    }
-
-    setLoadingState(true);
     try {
       await api.deleteProduct(p.sku);
-      setMsg({ type: 'success', text: `Đã xóa mặt hàng '${p.sku}' và phát tín hiệu đồng bộ xóa tới toàn bộ chi nhánh!` });
+      setMsg({ type: 'success', text: `Đã xóa mặt hàng '${p.sku}' khỏi toàn bộ hệ thống.` });
       if (onRefresh) onRefresh();
-      setTimeout(() => setMsg(null), 3000);
+      setTimeout(() => setMsg(null), 2500);
     } catch (err) {
       alert(err.message || 'Lỗi khi xóa sản phẩm');
-    } finally {
-      setLoadingState(false);
     }
   };
 
-  // Helper để hiển thị loading cục bộ
-  const [loadingState, setLoadingState] = useState(false);
-
-  // Lọc sản phẩm
-  const filteredStock = globalStock.filter(p => {
+  const filteredStock = globalStock.filter((p) => {
+    const q = searchTerm.toLowerCase();
     const matchSearch =
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.product_name.toLowerCase().includes(searchTerm.toLowerCase());
-
-    const isLow = (p.total_available || 0) <= 20;
-    if (statusFilter === 'LOW') return matchSearch && isLow;
-    if (statusFilter === 'SAFE') return matchSearch && !isLow;
-    return matchSearch;
+      p.sku.toLowerCase().includes(q) ||
+      p.product_name.toLowerCase().includes(q) ||
+      (p.barcode || '').toLowerCase().includes(q);
+    if (!matchSearch) return false;
+    const hnAvail = p.branches?.HN?.available || 0;
+    const hcmAvail = p.branches?.HCM?.available || 0;
+    if (statusFilter === 'LOW') return hnAvail <= 10 || hcmAvail <= 10;
+    if (statusFilter === 'RESERVED') return (p.total_reserved || 0) > 0;
+    return true;
   });
 
   return (
-    <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-5 shadow-lg">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h3 className="text-lg font-bold text-white flex items-center gap-2">
-            <i className="fa-solid fa-boxes-stacked text-amber-400"></i>
-            Tồn kho Toàn cục Hệ thống (HQ Read-Model Snapshot)
+          <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+            <i className="fa-solid fa-boxes-stacked text-indigo-600"></i>
+            Danh mục Sản phẩm & Tổng hợp Tồn kho Toàn quốc (SAN_PHAM / TONG_HOP_TON_KHO)
           </h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Đồng bộ bất đồng bộ từ các chi nhánh thông qua RabbitMQ Broker (Eventual Consistency)
+          <p className="text-xs text-slate-500 mt-0.5">
+            Đồng bộ bất đồng bộ từ các chi nhánh về Trung tâm qua RabbitMQ & Outbox Pattern
           </p>
         </div>
+
         <div className="flex items-center gap-2">
           {!readOnly && (
             <button
               onClick={() => {
-                setShowAddModal(true);
+                setShowAddModal(!showAddModal);
                 setEditingProduct(null);
                 setMsg(null);
               }}
-              className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-indigo-950/40"
+              className="text-xs px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold flex items-center gap-1.5 shadow-xs"
             >
-              <i className="fa-solid fa-plus"></i>
-              Thêm Mặt Hàng Mới
+              <i className="fa-solid fa-plus"></i> Thêm Mặt Hàng
             </button>
           )}
           <button
             onClick={onRefresh}
-            className="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors flex items-center gap-1.5"
+            className="text-xs px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium flex items-center gap-1.5"
           >
-            <i className={`fa-solid fa-rotate-right ${loading || loadingState ? 'animate-spin' : ''}`}></i>
+            <i className={`fa-solid fa-arrows-rotate ${loading ? 'animate-spin' : ''}`}></i>
             Làm mới
           </button>
         </div>
       </div>
 
-      {/* Thông báo thao tác */}
       {msg && (
-        <div className={`p-3 rounded-lg text-xs mb-4 flex items-center justify-between ${
-          msg.type === 'success'
-            ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/40'
-            : 'bg-red-950/60 text-red-300 border border-red-500/40'
+        <div className={`p-3 rounded-lg text-xs mb-4 border ${
+          msg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'
         }`}>
-          <div className="flex items-center gap-2">
-            <i className={`fa-solid ${msg.type === 'success' ? 'fa-circle-check text-emerald-400' : 'fa-circle-exclamation text-red-400'}`}></i>
-            <span>{msg.text}</span>
-          </div>
-          <button onClick={() => setMsg(null)} className="text-slate-400 hover:text-white">
-            <i className="fa-solid fa-xmark"></i>
-          </button>
+          <i className={`fa-solid ${msg.type === 'success' ? 'fa-circle-check' : 'fa-triangle-exclamation'} mr-1.5`}></i>
+          {msg.text}
         </div>
       )}
 
-      {/* Modal Thêm Sản Phẩm Mới */}
-      {showAddModal && (
-        <div className="mb-5 p-4 bg-slate-900/95 border border-indigo-500/50 rounded-xl animate-fade-in shadow-xl">
-          <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-700">
-            <h4 className="text-sm font-bold text-indigo-300 flex items-center gap-2">
-              <i className="fa-solid fa-cart-plus"></i>
-              Thêm Mặt Hàng Mới & Khởi Tạo Phân Bổ Tồn Kho Chi Nhánh
+      {/* Modal Thêm Sản Phẩm */}
+      {!readOnly && showAddModal && (
+        <div className="mb-5 p-4 bg-slate-50 border border-indigo-200 rounded-xl">
+          <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-slate-200">
+            <h4 className="text-xs font-bold text-indigo-800 flex items-center gap-1.5">
+              <i className="fa-solid fa-box-open"></i> Khởi tạo Mặt hàng Mới & Phân bổ Tồn đầu kỳ
             </h4>
-            <button
-              onClick={() => setShowAddModal(false)}
-              className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded"
-            >
-              <i className="fa-solid fa-xmark text-sm"></i>
+            <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-700">
+              <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
-
           <form onSubmit={handleCreateProduct} className="space-y-3 text-xs">
-            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              1. Thông tin hàng hóa (Master Data)
-            </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div>
-                <label className="block text-slate-400 mb-1">Mã SKU (*)</label>
-                <input
-                  type="text"
-                  placeholder="VD: LAPTOP-DELL-XPS15"
-                  value={sku}
-                  onChange={e => setSku(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-indigo-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Mã SKU (*)</label>
+                <input type="text" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="VD: IPAD-PRO-M4" required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-mono uppercase focus:outline-none focus:border-indigo-600" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Mã vạch (Barcode)</label>
+                <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} placeholder="Tự sinh nếu để trống" className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-mono focus:outline-none focus:border-indigo-600" />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-slate-400 mb-1">Tên Hàng Hóa (*)</label>
-                <input
-                  type="text"
-                  placeholder="VD: Laptop Dell XPS 15 9530 Core i7/16GB/512GB"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Tên Sản Phẩm (*)</label>
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: iPad Pro M4 11 inch" required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-600" />
               </div>
               <div>
-                <label className="block text-slate-400 mb-1">Đơn vị tính</label>
-                <input
-                  type="text"
-                  placeholder="Chiếc, Hộp, Bộ..."
-                  value={unit}
-                  onChange={e => setUnit(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Ngành hàng (DANH_MUC_SP)</label>
+                <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-600">
+                  {categories.length > 0 ? categories.map((c) => (
+                    <option key={c.category_id} value={c.category_id}>{c.category_name}</option>
+                  )) : <option value={1}>Điện tử - Laptop</option>}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Đơn vị tính</label>
+                <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-600" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Giá vốn (VNĐ)</label>
+                <input type="number" min="0" step="10000" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums focus:outline-none focus:border-indigo-600" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Giá bán niêm yết (VNĐ)</label>
+                <input type="number" min="0" step="10000" value={price} onChange={(e) => setPrice(e.target.value)} required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums focus:outline-none focus:border-indigo-600" />
+              </div>
+              <div>
+                <label className="block text-sky-700 font-semibold mb-1">Tồn đầu Kho HN</label>
+                <input type="number" min="0" value={stockHN} onChange={(e) => setStockHN(e.target.value)} className="w-full bg-white border border-sky-300 rounded-lg px-2.5 py-1.5 font-bold text-sky-700 tabular-nums" />
+              </div>
+              <div>
+                <label className="block text-violet-700 font-semibold mb-1">Tồn đầu Kho HCM</label>
+                <input type="number" min="0" value={stockHCM} onChange={(e) => setStockHCM(e.target.value)} className="w-full bg-white border border-violet-300 rounded-lg px-2.5 py-1.5 font-bold text-violet-700 tabular-nums" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Định mức Min</label>
+                <input type="number" min="0" value={minThreshold} onChange={(e) => setMinThreshold(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums" />
+              </div>
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Định mức Max</label>
+                <input type="number" min="1" value={maxThreshold} onChange={(e) => setMaxThreshold(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums" />
               </div>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div>
-                <label className="block text-slate-400 mb-1">Đơn giá (VNĐ)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="10000"
-                  value={price}
-                  onChange={e => setPrice(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-slate-400 mb-1">Danh mục</label>
-                <input
-                  type="text"
-                  value={category}
-                  onChange={e => setCategory(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-slate-400 mb-1">Định mức Min</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={minThreshold}
-                  onChange={e => setMinThreshold(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-slate-400 mb-1">Định mức Max</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={maxThreshold}
-                  onChange={e => setMaxThreshold(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            </div>
-
-            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-2 border-t border-slate-800">
-              2. Chỉ định Tồn Kho Đầu Kỳ cho từng Chi Nhánh (Initial Stock Allocation)
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-slate-800/60 rounded-lg border border-slate-700">
-              <div>
-                <label className="block text-indigo-300 font-semibold mb-1 flex items-center gap-1.5">
-                  <i className="fa-solid fa-warehouse text-indigo-400"></i>
-                  Tồn đầu kỳ Kho Hà Nội (HN)
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  value={stockHN}
-                  onChange={e => setStockHN(e.target.value)}
-                  className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-2.5 py-1.5 text-indigo-200 font-bold focus:outline-none focus:border-indigo-400"
-                />
-              </div>
-              <div>
-                <label className="block text-violet-300 font-semibold mb-1 flex items-center gap-1.5">
-                  <i className="fa-solid fa-warehouse text-violet-400"></i>
-                  Tồn đầu kỳ Kho TP.HCM (HCM)
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  value={stockHCM}
-                  onChange={e => setStockHCM(e.target.value)}
-                  className="w-full bg-slate-900 border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-violet-200 font-bold focus:outline-none focus:border-violet-400"
-                />
-              </div>
-            </div>
-
             <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowAddModal(false)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold disabled:opacity-50 flex items-center gap-1.5"
-              >
-                <i className="fa-solid fa-paper-plane"></i>
-                {submitting ? 'Đang phát tán đồng bộ...' : 'Tạo & Đồng Bộ Toàn Bộ Chi Nhánh'}
+              <button type="button" onClick={() => setShowAddModal(false)} className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700">Hủy</button>
+              <button type="submit" disabled={submitting} className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold disabled:opacity-50">
+                <i className="fa-solid fa-paper-plane mr-1"></i> {submitting ? 'Đang lưu...' : 'Tạo & Đồng Bộ Chi Nhánh'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Modal Chỉnh Sửa Sản Phẩm */}
-      {editingProduct && (
-        <div className="mb-5 p-4 bg-slate-900/95 border border-amber-500/50 rounded-xl animate-fade-in shadow-xl">
-          <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-700">
-            <h4 className="text-sm font-bold text-amber-300 flex items-center gap-2">
-              <i className="fa-solid fa-pen-to-square"></i>
-              Chỉnh Sửa Mặt Hàng [{editingProduct.sku}]
+      {/* Modal Chỉnh sửa Sản Phẩm */}
+      {!readOnly && editingProduct && (
+        <div className="mb-5 p-4 bg-amber-50/50 border border-amber-300 rounded-xl">
+          <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-amber-200">
+            <h4 className="text-xs font-bold text-amber-800 flex items-center gap-1.5">
+              <i className="fa-solid fa-pen-to-square"></i> Chỉnh sửa Mặt hàng [{editingProduct.sku}]
             </h4>
-            <button
-              onClick={() => setEditingProduct(null)}
-              className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded"
-            >
-              <i className="fa-solid fa-xmark text-sm"></i>
+            <button onClick={() => setEditingProduct(null)} className="text-slate-400 hover:text-slate-700">
+              <i className="fa-solid fa-xmark"></i>
             </button>
           </div>
-
           <form onSubmit={handleUpdateProduct} className="space-y-3 text-xs">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div>
-                <label className="block text-slate-400 mb-1">Mã SKU (Cố định)</label>
-                <input
-                  type="text"
-                  value={editingProduct.sku}
-                  disabled
-                  className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-400 font-mono cursor-not-allowed"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Mã vạch</label>
+                <input type="text" value={editBarcode} onChange={(e) => setEditBarcode(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-mono" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-slate-700 font-semibold mb-1">Tên Sản Phẩm (*)</label>
+                <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5" />
               </div>
               <div>
-                <label className="block text-slate-400 mb-1">Tên Hàng Hóa (*)</label>
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={e => setEditName(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Ngành hàng</label>
+                <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5">
+                  {categories.length > 0 ? categories.map((c) => (
+                    <option key={c.category_id} value={c.category_id}>{c.category_name}</option>
+                  )) : <option value={1}>Điện tử - Laptop</option>}
+                </select>
               </div>
               <div>
-                <label className="block text-slate-400 mb-1">Đơn vị tính</label>
-                <input
-                  type="text"
-                  value={editUnit}
-                  onChange={e => setEditUnit(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Đơn vị tính</label>
+                <input type="text" value={editUnit} onChange={(e) => setEditUnit(e.target.value)} required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5" />
               </div>
               <div>
-                <label className="block text-slate-400 mb-1">Đơn giá (VNĐ)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="10000"
-                  value={editPrice}
-                  onChange={e => setEditPrice(e.target.value)}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Giá vốn (VNĐ)</label>
+                <input type="number" min="0" step="10000" value={editCostPrice} onChange={(e) => setEditCostPrice(e.target.value)} className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums" />
               </div>
               <div>
-                <label className="block text-slate-400 mb-1">Định mức Min</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={editMinTh}
-                  onChange={e => setEditMinTh(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-                />
+                <label className="block text-slate-700 font-semibold mb-1">Giá bán (VNĐ)</label>
+                <input type="number" min="0" step="10000" value={editPrice} onChange={(e) => setEditPrice(e.target.value)} required className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 tabular-nums" />
               </div>
-              <div>
-                <label className="block text-slate-400 mb-1">Định mức Max</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={editMaxTh}
-                  onChange={e => setEditMaxTh(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-500"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-sky-700 font-semibold mb-1">Tồn HN</label>
+                  <input type="number" min="0" value={editStockHN} onChange={(e) => setEditStockHN(e.target.value)} className="w-full bg-white border border-sky-300 rounded-lg px-2 py-1.5 font-bold text-sky-700 tabular-nums" />
+                </div>
+                <div>
+                  <label className="block text-violet-700 font-semibold mb-1">Tồn HCM</label>
+                  <input type="number" min="0" value={editStockHCM} onChange={(e) => setEditStockHCM(e.target.value)} className="w-full bg-white border border-violet-300 rounded-lg px-2 py-1.5 font-bold text-violet-700 tabular-nums" />
+                </div>
               </div>
             </div>
-
-            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-2 border-t border-slate-800">
-              Điều chỉnh Tồn Kho Khả Dụng theo Chi Nhánh
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-slate-800/60 rounded-lg border border-slate-700">
-              <div>
-                <label className="block text-indigo-300 font-semibold mb-1 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <i className="fa-solid fa-warehouse text-indigo-400"></i>
-                    Tồn kho Kho Hà Nội (HN)
-                  </span>
-                  {editingProduct.branches?.HN?.reserved > 0 && (
-                    <span className="text-[10px] text-amber-400 font-normal">
-                      (Tạm khóa: {editingProduct.branches.HN.reserved})
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  value={editStockHN}
-                  onChange={e => setEditStockHN(e.target.value)}
-                  className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-2.5 py-1.5 text-indigo-200 font-bold focus:outline-none focus:border-indigo-400"
-                />
-              </div>
-              <div>
-                <label className="block text-violet-300 font-semibold mb-1 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <i className="fa-solid fa-warehouse text-violet-400"></i>
-                    Tồn kho Kho TP.HCM (HCM)
-                  </span>
-                  {editingProduct.branches?.HCM?.reserved > 0 && (
-                    <span className="text-[10px] text-amber-400 font-normal">
-                      (Tạm khóa: {editingProduct.branches.HCM.reserved})
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  value={editStockHCM}
-                  onChange={e => setEditStockHCM(e.target.value)}
-                  className="w-full bg-slate-900 border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-violet-200 font-bold focus:outline-none focus:border-violet-400"
-                />
-              </div>
-            </div>
-
             <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setEditingProduct(null)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-              >
-                Hủy
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold disabled:opacity-50 flex items-center gap-1.5"
-              >
-                <i className="fa-solid fa-check"></i>
-                {submitting ? 'Đang cập nhật...' : 'Lưu Thay Đổi & Đồng Bộ'}
+              <button type="button" onClick={() => setEditingProduct(null)} className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700">Hủy</button>
+              <button type="submit" disabled={submitting} className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold disabled:opacity-50">
+                <i className="fa-solid fa-check mr-1"></i> {submitting ? 'Đang cập nhật...' : 'Lưu Thay Đổi & Đồng Bộ'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Thanh Tìm Kiếm & Bộ Lọc */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mb-3 text-xs">
-        <div className="relative w-full sm:w-72">
+      {/* Search & Filter */}
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mb-4 text-xs">
+        <div className="relative w-full sm:w-80">
           <i className="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400"></i>
           <input
             type="text"
-            placeholder="Tìm theo SKU hoặc tên hàng hóa..."
+            placeholder="Tìm theo SKU, mã vạch hoặc tên..."
             value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-slate-900 focus:outline-none focus:bg-white focus:border-indigo-500"
           />
         </div>
-
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-          <span className="text-slate-400 text-xs">Trạng thái:</span>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
           <select
             value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="bg-slate-900 border border-slate-700 text-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500"
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:border-indigo-500"
           >
             <option value="ALL">Tất cả ({globalStock.length})</option>
-            <option value="SAFE">Mức an toàn</option>
             <option value="LOW">Cảnh báo tồn thấp</option>
+            <option value="RESERVED">Đang có hàng tạm giữ</option>
           </select>
-          <span className="text-slate-500 font-mono text-[11px] ml-1">
-            Hiển thị: {filteredStock.length}/{globalStock.length}
-          </span>
+          <span className="text-slate-500">Hiển thị {filteredStock.length}/{globalStock.length}</span>
         </div>
       </div>
 
-      {/* Bảng Dữ Liệu Tồn Kho */}
+      {/* Table */}
       <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm text-slate-300">
-          <thead className="bg-slate-900/70 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700">
-            <tr>
-              <th className="py-3 px-3">Mã SKU</th>
-              <th className="py-3 px-3">Tên Hàng Hóa</th>
-              <th className="py-3 px-2 text-center">ĐVT</th>
-              <th className="py-3 px-3 text-right">Đơn Giá</th>
-              <th className="py-3 px-3 text-center">Tổng Khả Dụng</th>
-              <th className="py-3 px-3 text-center">Tổng Tạm Khóa</th>
-              <th className="py-3 px-3 text-center">Trạng Thái Kho</th>
-              <th className="py-3 px-3 bg-indigo-950/30 text-indigo-300 text-center border-l border-slate-700">
-                Kho Hà Nội (HN)
-              </th>
-              <th className="py-3 px-3 bg-violet-950/30 text-violet-300 text-center border-l border-slate-700">
-                Kho TP.HCM (HCM)
-              </th>
-              {!readOnly && (
-                <th className="py-3 px-3 text-center border-l border-slate-700">Thao Tác</th>
-              )}
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider font-semibold">
+              <th className="py-2.5 px-3">SKU / Mã vạch</th>
+              <th className="py-2.5 px-3">Sản phẩm & Ngành hàng</th>
+              <th className="py-2.5 px-3 text-right">Giá vốn / Giá bán</th>
+              <th className="py-2.5 px-3 text-center">Tổng Khả dụng</th>
+              <th className="py-2.5 px-3 text-center">Kho HN</th>
+              <th className="py-2.5 px-3 text-center">Kho HCM</th>
+              <th className="py-2.5 px-3 text-center">Trạng thái</th>
+              {!readOnly && <th className="py-2.5 px-3 text-right">Thao tác</th>}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-700/60 font-sans">
+          <tbody className="divide-y divide-slate-100 text-xs">
             {filteredStock.length === 0 ? (
               <tr>
-                <td colSpan={readOnly ? 9 : 10} className="py-8 text-center text-slate-500">
-                  {searchTerm ? 'Không tìm thấy mặt hàng nào phù hợp với từ khóa.' : 'Chưa có dữ liệu tồn kho snapshot.'}
+                <td colSpan={readOnly ? 7 : 8} className="py-8 text-center text-slate-400">
+                  Không tìm thấy sản phẩm nào.
                 </td>
               </tr>
             ) : (
-              filteredStock.map(p => {
-                const hn = p.branches?.HN || { available: 0, reserved: 0 };
-                const hcm = p.branches?.HCM || { available: 0, reserved: 0 };
-                const isLow = (p.total_available || 0) <= 20;
+              filteredStock.map((p) => {
+                const hnAvail = p.branches?.HN?.available ?? 0;
+                const hnRes = p.branches?.HN?.reserved ?? 0;
+                const hcmAvail = p.branches?.HCM?.available ?? 0;
+                const hcmRes = p.branches?.HCM?.reserved ?? 0;
+                const isLow = hnAvail <= 10 || hcmAvail <= 10;
 
                 return (
-                  <tr key={p.sku} className="hover:bg-slate-700/30 transition-colors">
-                    <td className="py-3 px-3 font-mono font-medium text-amber-300 text-xs">{p.sku}</td>
-                    <td className="py-3 px-3 font-semibold text-slate-100">{p.product_name}</td>
-                    <td className="py-3 px-2 text-center text-slate-400 text-xs">{p.unit}</td>
-                    <td className="py-3 px-3 text-right text-slate-300 font-mono text-xs">
-                      {p.price ? Number(p.price).toLocaleString('vi-VN') + ' đ' : '0 đ'}
+                  <tr key={p.sku} className="hover:bg-slate-50 transition-colors">
+                    <td className="py-2.5 px-3">
+                      <div className="font-mono font-bold text-indigo-700">{p.sku}</div>
+                      <div className="font-mono text-[10px] text-slate-400">{p.barcode || `BC-${p.sku}`}</div>
                     </td>
-                    <td className="py-3 px-3 text-center font-bold text-emerald-400 text-base">
-                      {p.total_available}
+                    <td className="py-2.5 px-3">
+                      <div className="font-semibold text-slate-900">{p.product_name}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {p.category_name || 'Chưa phân loại'} • {p.unit}
+                      </div>
                     </td>
-                    <td className="py-3 px-3 text-center font-medium text-amber-400">
-                      {p.total_reserved > 0 ? (
-                        <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs">
-                          {p.total_reserved}
-                        </span>
-                      ) : (
-                        <span className="text-slate-500 text-xs">0</span>
+                    <td className="py-2.5 px-3 text-right tabular-nums">
+                      <div className="text-slate-900 font-semibold">{(p.price || 0).toLocaleString('vi-VN')} đ</div>
+                      <div className="text-[10px] text-slate-400">Vốn: {(p.cost_price || 0).toLocaleString('vi-VN')} đ</div>
+                    </td>
+                    <td className="py-2.5 px-3 text-center tabular-nums">
+                      <span className="text-sm font-extrabold text-emerald-700">{p.total_available}</span>
+                      {(p.total_reserved || 0) > 0 && (
+                        <div className="text-[10px] text-amber-600 font-medium">Khóa: {p.total_reserved}</div>
                       )}
                     </td>
-                    <td className="py-3 px-3 text-center">
+                    <td className="py-2.5 px-3 text-center tabular-nums">
+                      <span className="font-bold text-sky-700">{hnAvail}</span>
+                      {hnRes > 0 && <span className="block text-[10px] text-amber-600">({hnRes} khóa)</span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-center tabular-nums">
+                      <span className="font-bold text-violet-700">{hcmAvail}</span>
+                      {hcmRes > 0 && <span className="block text-[10px] text-amber-600">({hcmRes} khóa)</span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-center">
                       {isLow ? (
-                        <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-red-500/20 text-red-300 border border-red-500/30">
-                          Cảnh báo tồn thấp
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                          Tồn thấp
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Mức an toàn
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          An toàn
                         </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-center border-l border-slate-700 bg-indigo-950/10">
-                      <span className="font-semibold text-indigo-300">{hn.available}</span>
-                      {hn.reserved > 0 && (
-                        <span className="ml-1 text-xs text-amber-400">({hn.reserved} khóa)</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-center border-l border-slate-700 bg-violet-950/10">
-                      <span className="font-semibold text-violet-300">{hcm.available}</span>
-                      {hcm.reserved > 0 && (
-                        <span className="ml-1 text-xs text-amber-400">({hcm.reserved} khóa)</span>
                       )}
                     </td>
                     {!readOnly && (
-                      <td className="py-3 px-3 text-center border-l border-slate-700">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            onClick={() => handleOpenEdit(p)}
-                            title="Chỉnh sửa thông tin mặt hàng"
-                            className="px-2 py-1 rounded bg-slate-700/60 hover:bg-amber-600/30 text-amber-300 text-xs transition-colors flex items-center gap-1"
-                          >
-                            <i className="fa-solid fa-pen-to-square"></i>
-                            <span>Sửa</span>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteProduct(p)}
-                            title="Xóa mặt hàng khỏi hệ thống"
-                            className="px-2 py-1 rounded bg-slate-700/60 hover:bg-red-600/30 text-red-300 text-xs transition-colors flex items-center gap-1"
-                          >
-                            <i className="fa-solid fa-trash-can"></i>
-                            <span>Xóa</span>
-                          </button>
-                        </div>
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
+                        <button
+                          onClick={() => handleOpenEdit(p)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-[11px] font-semibold"
+                        >
+                          <i className="fa-solid fa-pen mr-1"></i> Sửa
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProduct(p)}
+                          className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[11px] font-semibold"
+                        >
+                          <i className="fa-solid fa-trash"></i>
+                        </button>
                       </td>
                     )}
                   </tr>

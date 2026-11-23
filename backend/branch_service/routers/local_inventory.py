@@ -24,7 +24,10 @@ from shared.event_schemas import (
     StockThresholdUpdate,
     StockAuditRequest,
     CustomerOrderCreate,
+    WanToggleRequest,
 )
+from shared.auth import require_branch_manager_or_hq
+from shared.cluster_infra import is_wan_online, set_wan_online
 
 BRANCH_CODE = os.getenv("BRANCH_CODE", "HN")
 stock_service = StockService(BRANCH_CODE)
@@ -69,7 +72,12 @@ def list_local_categories(db: Session = Depends(get_db)):
 
 
 @router.put("/inventory/{sku}/thresholds")
-def update_thresholds(sku: str, payload: StockThresholdUpdate, db: Session = Depends(get_db)):
+def update_thresholds(
+    sku: str,
+    payload: StockThresholdUpdate,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_branch_manager_or_hq)
+):
     """Cập nhật định mức tồn kho an toàn (Min/Max Thresholds)"""
     inv = db.query(LocalInventory).filter(LocalInventory.sku == sku).first()
     if not inv:
@@ -242,6 +250,30 @@ def list_outbox_events(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@router.get("/network/wan-status")
+def get_wan_status(db: Session = Depends(get_db)):
+    """Trạng thái đường truyền WAN tới Trung tâm HQ & số lượng sự kiện chờ trong Outbox"""
+    pending_count = db.query(OutboxEvent).filter(OutboxEvent.is_published == False).count()
+    return {
+        "branch_code": BRANCH_CODE,
+        "wan_online": is_wan_online(),
+        "pending_outbox_count": pending_count
+    }
+
+
+@router.post("/network/wan-toggle")
+def toggle_wan_connection(payload: WanToggleRequest, db: Session = Depends(get_db)):
+    """Công tắc mô phỏng đứt/khôi phục mạng WAN để kiểm chứng Local Autonomy & Outbox Pattern"""
+    new_state = set_wan_online(payload.online)
+    pending_count = db.query(OutboxEvent).filter(OutboxEvent.is_published == False).count()
+    return {
+        "branch_code": BRANCH_CODE,
+        "wan_online": new_state,
+        "pending_outbox_count": pending_count,
+        "message": "Đã khôi phục kết nối mạng WAN tới Trụ sở HQ. OutboxWorker đang tự động đẩy các sự kiện tồn đọng." if new_state else "Đã ngắt kết nối WAN tới Trụ sở HQ (Chi nhánh chuyển sang chế độ Tự trị Cục bộ Offline)."
+    }
 
 
 @router.get("/schema-overview")

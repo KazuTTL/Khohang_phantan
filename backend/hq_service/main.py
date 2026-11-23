@@ -200,6 +200,12 @@ def cluster_status():
     }
 
 
+@app.get("/api/v1/replica/preview")
+def hq_replica_preview():
+    """Đọc dữ liệu tồn kho tổng hợp trực tiếp từ DB Replica Dự phòng (Standby Read-Only)"""
+    return db_replicator.read_replica_preview("Global_Inventory_Snapshot", limit=30)
+
+
 @app.get("/health")
 def health_check():
     return {
