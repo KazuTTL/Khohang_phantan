@@ -50,6 +50,7 @@ def confirm_transfer(transfer_id: str, db: Session = Depends(get_db)):
 
     sku = db_order.sku if db_order else order_data["sku"]
     qty = db_order.quantity if db_order else order_data["quantity"]
+    src_branch = db_order.source_branch if db_order else order_data.get("source_branch")
     ref_id = f"TRANSFER-IN-{transfer_id}"
 
     success = stock_service.transfer_in(
@@ -57,7 +58,8 @@ def confirm_transfer(transfer_id: str, db: Session = Depends(get_db)):
         sku=sku,
         quantity=qty,
         reference_id=ref_id,
-        transfer_id=transfer_id
+        transfer_id=transfer_id,
+        source_branch=src_branch
     )
 
     if success:

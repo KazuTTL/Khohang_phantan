@@ -106,14 +106,16 @@ class MessageBroker:
             branch = parts[-1]
             if branch in NODE_URLS:
                 targets.append(NODE_URLS[branch])
+        elif routing_key.startswith("evt.catalog."):
+            targets.append(NODE_URLS["HN"])
+            targets.append(NODE_URLS["HCM"])
         elif routing_key.startswith("evt."):
             # Sự kiện luôn gửi về HQ
             targets.append(NODE_URLS["HQ"])
-            # Nếu là completed, gửi thêm cho source branch
+            # Nếu là completed, gửi thêm cho các chi nhánh nguồn để tất toán
             if routing_key == "evt.transfer.completed":
-                src = data.get("data", {}).get("source_branch")
-                if src and src in NODE_URLS and NODE_URLS[src] not in targets:
-                    targets.append(NODE_URLS[src])
+                targets.append(NODE_URLS["HN"])
+                targets.append(NODE_URLS["HCM"])
 
         for target_url in targets:
             try:

@@ -11,7 +11,7 @@ import os
 import logging
 import time
 from typing import Dict, Any
-from ..models import IncomingTransfer, LocalProduct, LocalInventory, StockLedger
+from ..models import IncomingTransfer, LocalProduct, LocalCategory, Account, LocalInventory, StockLedger
 from ..database import SessionLocal
 from ..services.stock_service import StockService
 from ..routers.incoming_transfers import incoming_orders
@@ -32,7 +32,9 @@ async def start_branch_consumer():
         "evt.catalog.*",
         "evt.catalog.product_created",
         "evt.catalog.product_updated",
-        "evt.catalog.product_deleted"
+        "evt.catalog.product_deleted",
+        "evt.catalog.category_created",
+        "evt.catalog.account_synced"
     ]
 
     async def handle_command(msg_dict: Dict[str, Any]):
@@ -54,7 +56,8 @@ async def start_branch_consumer():
                     sku=sku,
                     quantity=quantity,
                     reference_id=ref_id,
-                    transfer_id=transfer_id
+                    transfer_id=transfer_id,
+                    dest_branch=data.get("dest_branch")
                 )
 
             # 2. Lệnh bù trừ / hoàn trả tại chi nhánh nguồn khi bị từ chối
@@ -93,10 +96,9 @@ async def start_branch_consumer():
                 }
                 logger.info(f"[{BRANCH_CODE}] Kiện hàng {transfer_id} đã lưu CSDL và đang chờ xác nhận nhập kho.")
 
-            # 4. Khi toàn bộ giao dịch chuyển kho hoàn tất -> Kho nguồn tất toán trừ Reserved
+            # 4. Khi toàn bộ giao dịch chuyển kho hoàn tất -> Chỉ kho nguồn tất toán trừ Reserved
             elif event_type == "EVT_TRANSFER_COMPLETED":
-                # Chỉ xử lý nếu chi nhánh hiện tại chính là kho nguồn
-                if data.get("source_branch") == BRANCH_CODE or transfer_id in incoming_orders or True:
+                if data.get("dest_branch") != BRANCH_CODE:
                     ref_id = f"COMMIT-OUT-{transfer_id}"
                     stock_service.commit_out(
                         db=db,
@@ -112,8 +114,12 @@ async def start_branch_consumer():
                 if not existing_p:
                     p = LocalProduct(
                         sku=sku,
+                        barcode=data.get("barcode") or f"BC-{sku}",
                         product_name=data.get("product_name", sku),
-                        unit=data.get("unit", "Chiếc")
+                        category_id=data.get("category_id", 1),
+                        unit=data.get("unit", "Chiếc"),
+                        cost_price=float(data.get("cost_price", 0.0)),
+                        price=float(data.get("price", 0.0))
                     )
                     db.add(p)
 
@@ -129,6 +135,7 @@ async def start_branch_consumer():
                 if not existing_inv:
                     inv = LocalInventory(
                         sku=sku,
+                        branch_code=BRANCH_CODE,
                         available_qty=init_qty,
                         reserved_qty=0,
                         min_threshold=min_th,
@@ -146,6 +153,14 @@ async def start_branch_consumer():
                             note="Tồn kho đầu kỳ khi tạo sản phẩm"
                         )
                         db.add(ledger)
+                        stock_service._record_warehouse_transaction(
+                            db=db,
+                            tx_type="NHAP_KHO",
+                            items=[{"sku": sku, "signed_qty": init_qty, "post_balance": init_qty}],
+                            prefix="NK",
+                            status="HOAN_THANH",
+                            note="Tồn kho đầu kỳ khi tạo sản phẩm từ HQ"
+                        )
                 db.commit()
                 logger.info(f"[{BRANCH_CODE}] Đã tự động đồng bộ mặt hàng mới '{sku}' từ Master Catalog (Tồn ban đầu: {init_qty}).")
 
@@ -155,11 +170,23 @@ async def start_branch_consumer():
                 if p:
                     p.product_name = data.get("product_name", p.product_name)
                     p.unit = data.get("unit", p.unit)
+                    if data.get("barcode") is not None:
+                        p.barcode = data.get("barcode")
+                    if data.get("category_id") is not None:
+                        p.category_id = data.get("category_id")
+                    if data.get("cost_price") is not None:
+                        p.cost_price = float(data.get("cost_price"))
+                    if data.get("price") is not None:
+                        p.price = float(data.get("price"))
                 else:
                     p = LocalProduct(
                         sku=sku,
+                        barcode=data.get("barcode") or f"BC-{sku}",
                         product_name=data.get("product_name", sku),
-                        unit=data.get("unit", "Chiếc")
+                        category_id=data.get("category_id", 1),
+                        unit=data.get("unit", "Chiếc"),
+                        cost_price=float(data.get("cost_price", 0.0)),
+                        price=float(data.get("price", 0.0))
                     )
                     db.add(p)
 
@@ -190,11 +217,19 @@ async def start_branch_consumer():
                                 note=f"Điều chỉnh số lượng từ Trụ sở HQ: {old_qty} -> {new_qty}"
                             )
                             db.add(ledger)
-                        # Đồng bộ outbox về HQ
+                            stock_service._record_warehouse_transaction(
+                                db=db,
+                                tx_type="KIEM_KE",
+                                items=[{"sku": sku, "signed_qty": diff, "post_balance": new_qty}],
+                                prefix="KK",
+                                status="HOAN_THANH",
+                                note=f"Điều chỉnh số lượng từ Trụ sở HQ: {old_qty} -> {new_qty}"
+                            )
                         stock_service._queue_inventory_sync(db, sku, inv.available_qty, inv.reserved_qty)
                     else:
                         inv = LocalInventory(
                             sku=sku,
+                            branch_code=BRANCH_CODE,
                             available_qty=new_qty,
                             reserved_qty=0,
                             min_threshold=min_th,
@@ -233,6 +268,44 @@ async def start_branch_consumer():
                     db.delete(p)
                 db.commit()
                 logger.info(f"[{BRANCH_CODE}] Đã đồng bộ xóa sản phẩm '{sku}'.")
+
+            # 8. Đồng bộ danh mục ngành hàng mới (DANH_MUC_SP)
+            elif event_type == "EVT_CATEGORY_CREATED":
+                cat_id = data.get("category_id")
+                existing_c = db.query(LocalCategory).filter(LocalCategory.category_id == cat_id).first()
+                if not existing_c:
+                    cat = LocalCategory(
+                        category_id=cat_id,
+                        category_name=data.get("category_name"),
+                        description=data.get("description")
+                    )
+                    db.add(cat)
+                    db.commit()
+                    logger.info(f"[{BRANCH_CODE}] Đã đồng bộ danh mục '{data.get('category_name')}' (DANH_MUC_SP).")
+
+            # 9. Đồng bộ tài khoản phân quyền từ Trung tâm (TAI_KHOAN)
+            elif event_type == "EVT_ACCOUNT_SYNCED":
+                uname = data.get("username")
+                existing_acc = db.query(Account).filter(Account.username == uname).first()
+                if existing_acc:
+                    existing_acc.password_hash = data.get("password_hash", existing_acc.password_hash)
+                    existing_acc.full_name = data.get("full_name", existing_acc.full_name)
+                    existing_acc.role = data.get("role", existing_acc.role)
+                    existing_acc.branch_code = data.get("branch_code", existing_acc.branch_code)
+                    existing_acc.is_active = data.get("is_active", existing_acc.is_active)
+                else:
+                    acc = Account(
+                        account_id=data.get("account_id"),
+                        username=uname,
+                        password_hash=data.get("password_hash"),
+                        full_name=data.get("full_name"),
+                        role=data.get("role"),
+                        branch_code=data.get("branch_code"),
+                        is_active=data.get("is_active", True)
+                    )
+                    db.add(acc)
+                db.commit()
+                logger.info(f"[{BRANCH_CODE}] Đã đồng bộ tài khoản '{uname}' vào bảng TAI_KHOAN cục bộ.")
 
         except Exception as e:
             logger.error(f"[{BRANCH_CODE} CONSUMER] Lỗi xử lý command: {e}")

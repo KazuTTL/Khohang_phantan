@@ -1,19 +1,41 @@
 # backend/shared/auth.py
 """
 Hệ thống Xác thực & Phân quyền Người dùng (Authentication & RBAC)
-Sử dụng HMAC-SHA256 Token độc lập không phụ thuộc thư viện ngoài.
+- Sử dụng HMAC-SHA256 Token độc lập không phụ thuộc thư viện ngoài.
+- Hỗ trợ băm mật khẩu PBKDF2-HMAC-SHA256 và xác thực trực tiếp từ bảng TAI_KHOAN (Accounts) tại mỗi Site.
 """
+import os
 import hmac
 import hashlib
 import base64
 import json
 import time
-from typing import Optional, List, Dict, Any
-from fastapi import HTTPException, Security, Depends
+from typing import Optional, Dict, Any
+from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 SECRET_KEY = "wms_distributed_secret_key_jwt_udpt_2026"
 security_bearer = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str, salt: Optional[str] = None) -> str:
+    """Băm mật khẩu an toàn sử dụng PBKDF2-HMAC-SHA256 kèm salt ngẫu nhiên"""
+    if salt is None:
+        salt = os.urandom(16).hex()
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000)
+    return f"pbkdf2_sha256${salt}${dk.hex()}"
+
+
+def verify_password(plain_password: str, stored_hash: str) -> bool:
+    """Xác minh mật khẩu thuần với chuỗi mật khẩu đã băm"""
+    try:
+        if stored_hash.startswith("pbkdf2_sha256$"):
+            _, salt, hex_digest = stored_hash.split("$", 2)
+            dk = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt.encode("utf-8"), 100000)
+            return hmac.compare_digest(dk.hex(), hex_digest)
+        return hmac.compare_digest(plain_password, stored_hash)
+    except Exception:
+        return False
 
 # Danh sách người dùng hệ thống phân tán
 USERS_DB: Dict[str, Dict[str, Any]] = {
@@ -107,6 +129,26 @@ def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
         user_info.pop("password", None)
         return user_info
     return None
+
+
+def authenticate_user_db(db, account_model, username: str, password: str) -> Optional[Dict[str, Any]]:
+    """Xác thực người dùng trực tiếp từ bảng TAI_KHOAN (Accounts) tại DB cục bộ của Site"""
+    if db is not None and account_model is not None:
+        acc = db.query(account_model).filter(account_model.username == username).first()
+        if acc:
+            if not acc.is_active:
+                return None
+            if verify_password(password, acc.password_hash):
+                return {
+                    "account_id": acc.account_id,
+                    "username": acc.username,
+                    "full_name": acc.full_name,
+                    "role": acc.role,
+                    "branch": acc.branch_code,
+                    "auth_source": "LOCAL_DB_TAI_KHOAN"
+                }
+            return None
+    return authenticate_user(username, password)
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer)) -> Optional[Dict[str, Any]]:
     """Lấy thông tin người dùng từ Header Authorization. Cho phép truy cập nếu là kịch bản test không có token."""

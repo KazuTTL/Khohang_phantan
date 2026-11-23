@@ -4,7 +4,7 @@ Hợp đồng dữ liệu phân tán (Distributed Event & Command Schemas)
 Sử dụng Pydantic để chuẩn hóa định dạng thông điệp giữa HQ, Branch HN, Branch HCM qua RabbitMQ & REST API
 """
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 import uuid
 
@@ -50,6 +50,9 @@ class ProductCreate(BaseModel):
     product_name: str
     unit: str = "Chiếc"
     price: float = 0.0
+    cost_price: Optional[float] = None
+    barcode: Optional[str] = None
+    category_id: Optional[int] = 1
     category: Optional[str] = "Điện tử"
     initial_stock: Optional[Dict[str, int]] = Field(default_factory=dict, description="Tồn đầu kỳ theo chi nhánh {'HN': 50, 'HCM': 30}")
     min_threshold: int = Field(default=10, description="Định mức tồn tối thiểu")
@@ -60,6 +63,9 @@ class ProductUpdate(BaseModel):
     product_name: str
     unit: str = "Chiếc"
     price: float = 0.0
+    cost_price: Optional[float] = None
+    barcode: Optional[str] = None
+    category_id: Optional[int] = None
     category: Optional[str] = None
     min_threshold: Optional[int] = None
     max_threshold: Optional[int] = None
@@ -116,3 +122,29 @@ class TokenResponse(BaseModel):
 # Chi nhánh đích: Xác nhận hoặc từ chối nhận hàng
 class TransferDecisionRequest(BaseModel):
     reason: Optional[str] = None
+
+# ==============================================================================
+# 3. HỢP ĐỒNG BỔ SUNG CHUẨN HÓA 11 BẢNG CSDL (DANH MỤC, TÀI KHOẢN, ĐƠN HÀNG)
+# ==============================================================================
+
+class CategoryCreate(BaseModel):
+    category_name: str
+    description: Optional[str] = None
+
+class AccountCreate(BaseModel):
+    username: str
+    password: str
+    full_name: str
+    role: str = "BRANCH_STAFF"  # HQ_MANAGER | BRANCH_MANAGER | BRANCH_STAFF
+    branch_code: str = "HN"
+    is_active: bool = True
+
+class OrderItemCreate(BaseModel):
+    sku: str
+    quantity: int = Field(gt=0, description="Số lượng sản phẩm đặt mua phải lớn hơn 0")
+    unit_price: Optional[float] = None
+
+class CustomerOrderCreate(BaseModel):
+    customer_name: str
+    customer_phone: Optional[str] = None
+    items: List[OrderItemCreate] = Field(min_length=1, description="Danh sách sản phẩm trong đơn hàng")
