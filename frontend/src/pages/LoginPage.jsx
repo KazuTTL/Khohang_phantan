@@ -1,6 +1,5 @@
 // frontend/src/pages/LoginPage.jsx
 import React, { useState } from 'react';
-import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from '../components/Router';
 
@@ -31,9 +30,8 @@ export default function LoginPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api.login({ username: username.trim(), password });
-      login(res.access_token, res.user);
-      routeByRole(res.user);
+      const loggedUser = await login(username.trim(), password);
+      routeByRole(loggedUser);
     } catch (err) {
       setErrorMsg(err.message || 'Tên đăng nhập hoặc mật khẩu không đúng.');
     } finally {
@@ -47,9 +45,8 @@ export default function LoginPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api.login({ username: u, password: p });
-      login(res.access_token, res.user);
-      routeByRole(res.user);
+      const loggedUser = await login(u, p);
+      routeByRole(loggedUser);
     } catch (err) {
       setErrorMsg(err.message || 'Lỗi kết nối máy chủ xác thực.');
     } finally {

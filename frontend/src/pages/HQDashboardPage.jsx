@@ -419,28 +419,34 @@ export default function HQDashboardPage() {
                 {catMsg.text}
               </div>
             )}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-              <form onSubmit={handleCreateCategory} className="lg:col-span-5 flex flex-col sm:flex-row gap-2 text-xs">
+            <div className="space-y-3.5">
+              <form onSubmit={handleCreateCategory} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 text-xs">
                 <input
                   type="text"
                   value={catName}
                   onChange={(e) => setCatName(e.target.value)}
                   placeholder="Tên ngành hàng mới..."
                   required
-                  className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2"
+                  className="sm:col-span-4 w-full min-w-0 bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 />
                 <input
                   type="text"
                   value={catDesc}
                   onChange={(e) => setCatDesc(e.target.value)}
                   placeholder="Mô tả ngắn..."
-                  className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2"
+                  className="sm:col-span-6 w-full min-w-0 bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 />
-                <button type="submit" className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold shrink-0">
+                <button
+                  type="submit"
+                  className="sm:col-span-2 w-full px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold shadow-xs transition-colors whitespace-nowrap"
+                >
                   Thêm & Đồng bộ
                 </button>
               </form>
-              <div className="lg:col-span-7 flex flex-wrap gap-2">
+              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-1">
+                  Hiện có ({categories.length}):
+                </span>
                 {categories.map((c) => (
                   <span key={c.category_id} className="px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700">
                     <strong className="text-indigo-700">#{c.category_id}</strong> {c.category_name}
