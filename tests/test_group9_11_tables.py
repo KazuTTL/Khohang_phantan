@@ -85,6 +85,49 @@ def run_test():
         assert login_data["user"]["branch"] == "HN"
         print(f" -> Tài khoản mới '{new_staff}' đã băm mật khẩu, đồng bộ về HN và đăng nhập tự trị thành công!")
 
+        # 2B. Kiểm thử Khóa / Mở khóa / Sửa / Xóa tài khoản & đồng bộ sang HN
+        r_lock = client.patch(f"{HQ_BASE}/api/v1/accounts/{new_staff}/status", json={"is_active": False})
+        assert r_lock.status_code == 200, f"Lỗi khóa tài khoản: {r_lock.text}"
+        time.sleep(1.5)
+
+        r_login_locked_hq = client.post(f"{HQ_BASE}/api/v1/auth/login", json={"username": new_staff, "password": "secret_password_123"})
+        assert r_login_locked_hq.status_code == 403, f"Kỳ vọng 403 khi tài khoản bị khóa ở HQ, nhận {r_login_locked_hq.status_code}"
+        r_login_locked_hn = client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": new_staff, "password": "secret_password_123"})
+        assert r_login_locked_hn.status_code == 403, f"Kỳ vọng 403 khi tài khoản bị khóa đồng bộ sang HN, nhận {r_login_locked_hn.status_code}"
+
+        # Mở khóa + Nâng quyền lên BRANCH_MANAGER + Đổi mật khẩu
+        r_upd = client.put(f"{HQ_BASE}/api/v1/accounts/{new_staff}", json={
+            "full_name": f"Trưởng kho Test {test_id}",
+            "role": "BRANCH_MANAGER",
+            "branch_code": "HN",
+            "password": "new_password_456",
+            "is_active": True
+        })
+        assert r_upd.status_code == 200, f"Lỗi cập nhật tài khoản: {r_upd.text}"
+        assert client.post(f"{HQ_BASE}/api/v1/accounts/{new_staff}/resync").status_code == 200
+        time.sleep(1.5)
+
+        r_login_old_pw = client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": new_staff, "password": "secret_password_123"})
+        assert r_login_old_pw.status_code == 401
+        r_login_new_pw = client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": new_staff, "password": "new_password_456"})
+        assert r_login_new_pw.status_code == 200, f"Đăng nhập lại sau mở khóa thất bại: {r_login_new_pw.text}"
+        assert r_login_new_pw.json()["user"]["role"] == "BRANCH_MANAGER"
+
+        # Xóa tài khoản và xác nhận đồng bộ xóa sang HN (không còn fallback tĩnh)
+        r_del = client.delete(f"{HQ_BASE}/api/v1/accounts/{new_staff}")
+        assert r_del.status_code == 200, f"Lỗi xóa tài khoản: {r_del.text}"
+        time.sleep(1.5)
+
+        hq_usernames = [a["username"] for a in client.get(f"{HQ_BASE}/api/v1/accounts").json()]
+        hn_usernames = [a["username"] for a in client.get(f"{HN_BASE}/api/v1/auth/accounts").json()]
+        assert new_staff not in hq_usernames and new_staff not in hn_usernames
+        assert client.post(f"{HN_BASE}/api/v1/auth/login", json={"username": new_staff, "password": "new_password_456"}).status_code == 401
+
+        # Bảo vệ tài khoản root admin
+        assert client.patch(f"{HQ_BASE}/api/v1/accounts/admin/status", json={"is_active": False}).status_code == 400
+        assert client.delete(f"{HQ_BASE}/api/v1/accounts/admin").status_code == 400
+        print(f" -> Đã kiểm chứng Khóa (403), Cập nhật Role/MK, Resync, Xóa đồng bộ HQ->HN & Bảo vệ admin [OK]")
+
         # ------------------------------------------------------------------
         # BƯỚC 3: KIỂM THỬ DANH_MUC_SP & SAN_PHAM (NHÂN BẢN MASTER DATA)
         # ------------------------------------------------------------------

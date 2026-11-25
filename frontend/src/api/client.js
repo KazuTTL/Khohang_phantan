@@ -73,6 +73,21 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload)
   }),
+  updateAccountStatus: (username, isActive) => fetchJson(`${HQ_URL}/api/v1/accounts/${encodeURIComponent(username)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_active: isActive })
+  }),
+  updateAccount: (username, payload) => fetchJson(`${HQ_URL}/api/v1/accounts/${encodeURIComponent(username)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  }),
+  deleteAccount: (username) => fetchJson(`${HQ_URL}/api/v1/accounts/${encodeURIComponent(username)}`, {
+    method: 'DELETE'
+  }),
+  resyncAccount: (username) => fetchJson(`${HQ_URL}/api/v1/accounts/${encodeURIComponent(username)}/resync`, {
+    method: 'POST'
+  }),
+  getBranchAccounts: (baseUrl) => fetchJson(`${baseUrl}/api/v1/auth/accounts`),
   createProduct: (payload) => fetchJson(`${HQ_URL}/api/v1/products`, {
     method: 'POST',
     body: JSON.stringify(payload)

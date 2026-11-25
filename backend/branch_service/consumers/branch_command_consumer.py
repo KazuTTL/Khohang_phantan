@@ -34,7 +34,8 @@ async def start_branch_consumer():
         "evt.catalog.product_updated",
         "evt.catalog.product_deleted",
         "evt.catalog.category_created",
-        "evt.catalog.account_synced"
+        "evt.catalog.account_synced",
+        "evt.catalog.account_deleted"
     ]
 
     async def handle_command(msg_dict: Dict[str, Any]):
@@ -306,6 +307,15 @@ async def start_branch_consumer():
                     db.add(acc)
                 db.commit()
                 logger.info(f"[{BRANCH_CODE}] Đã đồng bộ tài khoản '{uname}' vào bảng TAI_KHOAN cục bộ.")
+
+            # 10. Đồng bộ xóa tài khoản từ Trung tâm (TAI_KHOAN)
+            elif event_type == "EVT_ACCOUNT_DELETED":
+                uname = data.get("username")
+                existing_acc = db.query(Account).filter(Account.username == uname).first()
+                if existing_acc:
+                    db.delete(existing_acc)
+                    db.commit()
+                    logger.info(f"[{BRANCH_CODE}] Đã xóa tài khoản '{uname}' khỏi bảng TAI_KHOAN cục bộ.")
 
         except Exception as e:
             logger.error(f"[{BRANCH_CODE} CONSUMER] Lỗi xử lý command: {e}")

@@ -139,6 +139,18 @@ class AccountCreate(BaseModel):
     branch_code: str = "HN"
     is_active: bool = True
 
+
+class AccountUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None  # HQ_MANAGER | BRANCH_MANAGER | BRANCH_STAFF
+    branch_code: Optional[str] = None  # HQ | HN | HCM
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AccountStatusUpdate(BaseModel):
+    is_active: bool
+
 class OrderItemCreate(BaseModel):
     sku: str
     quantity: int = Field(gt=0, description="Số lượng sản phẩm đặt mua phải lớn hơn 0")

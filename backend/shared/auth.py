@@ -135,19 +135,23 @@ def authenticate_user_db(db, account_model, username: str, password: str) -> Opt
     """Xác thực người dùng trực tiếp từ bảng TAI_KHOAN (Accounts) tại DB cục bộ của Site"""
     if db is not None and account_model is not None:
         acc = db.query(account_model).filter(account_model.username == username).first()
-        if acc:
-            if not acc.is_active:
-                return None
-            if verify_password(password, acc.password_hash):
-                return {
-                    "account_id": acc.account_id,
-                    "username": acc.username,
-                    "full_name": acc.full_name,
-                    "role": acc.role,
-                    "branch": acc.branch_code,
-                    "auth_source": "LOCAL_DB_TAI_KHOAN"
-                }
+        if not acc:
             return None
+        if not acc.is_active:
+            raise HTTPException(
+                status_code=403,
+                detail="Tài khoản đã bị Quản trị viên khóa (LOCKED). Vui lòng liên hệ Trụ sở chính HQ."
+            )
+        if verify_password(password, acc.password_hash):
+            return {
+                "account_id": acc.account_id,
+                "username": acc.username,
+                "full_name": acc.full_name,
+                "role": acc.role,
+                "branch": acc.branch_code,
+                "auth_source": "LOCAL_DB_TAI_KHOAN"
+            }
+        return None
     return authenticate_user(username, password)
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer)) -> Optional[Dict[str, Any]]:
